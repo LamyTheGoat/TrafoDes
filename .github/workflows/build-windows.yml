@@ -1,0 +1,62 @@
+name: Build Windows Executable
+
+on:
+  workflow_dispatch:
+    inputs:
+      expiration_days:
+        description: 'Days until expiration'
+        required: true
+        default: '7'
+        type: string
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install dearpygui numpy scipy numba pyinstaller
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Update expiration date
+        run: |
+          python -c "
+          import datetime
+          import re
+
+          days = int('${{ github.event.inputs.expiration_days }}')
+          exp_date = datetime.date.today() + datetime.timedelta(days=days)
+
+          with open('launcher.py', 'r') as f:
+              content = f.read()
+
+          pattern = r'EXPIRATION_DATE = datetime\.date\(\d+, \d+, \d+\)'
+          replacement = f'EXPIRATION_DATE = datetime.date({exp_date.year}, {exp_date.month}, {exp_date.day})'
+          content = re.sub(pattern, replacement, content)
+
+          with open('launcher.py', 'w') as f:
+              f.write(content)
+
+          print(f'Set expiration date to: {exp_date}')
+          "
+
+      - name: Build with PyInstaller
+        run: |
+          pyinstaller --clean --onefile --noconsole --name TransformerOptimizer launcher.py --hidden-import dearpygui --hidden-import numpy --hidden-import scipy --hidden-import scipy.optimize --hidden-import numba
+
+      - name: Upload Windows executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: TransformerOptimizer-Windows
+          path: dist/TransformerOptimizer.exe
+          retention-days: 30
