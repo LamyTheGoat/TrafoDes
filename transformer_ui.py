@@ -1,5 +1,5 @@
 """
-Transformer Optimizer UI - Dear PyGui Version
+Transformer Optimizer UI - Dear PyGui 2.11 Compatible Version
 Modern, high-resolution interface with GPU acceleration
 """
 
@@ -10,7 +10,8 @@ import time
 import sys
 import os
 import io
-from contextlib import redirect_stdout, redirect_stderr
+from playsound3 import playsound
+from queue import Queue, Empty
 
 # Add current directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -19,23 +20,39 @@ import mainRect
 
 
 class ConsoleCapture:
-    """Captures stdout/stderr and stores it for later display."""
-    def __init__(self, callback=None):
+    """Captures stdout/stderr and stores it for later display.
+
+    Uses a thread-safe queue to pass output to the UI thread.
+    Also writes to original stdout/stderr so console stays in sync.
+    """
+    def __init__(self, output_queue=None):
         self.buffer = io.StringIO()
-        self.callback = callback
+        self.output_queue = output_queue
         self._original_stdout = None
         self._original_stderr = None
 
     def write(self, text):
         self.buffer.write(text)
-        if self.callback:
+        # Always write to original stdout so console stays in sync
+        if self._original_stdout:
             try:
-                self.callback(text)
+                self._original_stdout.write(text)
+                self._original_stdout.flush()
             except:
                 pass
+        # Queue for thread-safe UI update
+        if self.output_queue is not None:
+            try:
+                self.output_queue.put_nowait(text)
+            except:
+                pass  # Queue full, skip this text
 
     def flush(self):
-        pass
+        if self._original_stdout:
+            try:
+                self._original_stdout.flush()
+            except:
+                pass
 
     def get_output(self):
         return self.buffer.getvalue()
@@ -64,7 +81,7 @@ class TransformerOptimizerApp:
         self.duck_angle = 0
         self._last_duck_update = 0
         self.console_capture = None
-        self.console_buffer = []
+        self.console_queue = Queue(maxsize=1000)  # Thread-safe queue for console output
 
         dpg.create_context()
         dpg.create_viewport(title="Transformer Design Optimizer", width=1100, height=850)
@@ -190,10 +207,9 @@ class TransformerOptimizerApp:
 
                 dpg.add_spacer(width=30)
 
-                # Status display
-                with dpg.group():
+                # Status display - using horizontal group instead of deprecated add_same_line
+                with dpg.group(horizontal=True):
                     dpg.add_text("Status:", color=(100, 105, 125))
-                    dpg.add_same_line()
                     dpg.add_text("Ready", tag="status_text", color=(72, 199, 142))
 
         dpg.set_primary_window("main_window", True)
@@ -257,9 +273,12 @@ class TransformerOptimizerApp:
         )
 
     def _on_frame(self):
-        """Frame callback for thread-safe duck animation (runs in main thread)."""
+        """Frame callback for thread-safe duck animation and console updates (runs in main thread)."""
         # Re-register for next frame
         dpg.set_frame_callback(dpg.get_frame_count() + 1, self._on_frame)
+
+        # Process console queue (thread-safe UI updates)
+        self._process_console_queue()
 
         # Animate duck only when optimizing
         if self.is_optimizing:
@@ -273,6 +292,33 @@ class TransformerOptimizerApp:
             # Reset duck to static when optimization ends
             self.duck_angle = 0
             self._draw_duck(30, 22, 0)
+
+    def _process_console_queue(self):
+        """Process pending console output from the queue (main thread only)."""
+        try:
+            # Batch process up to 50 items per frame to avoid UI lag
+            texts = []
+            for _ in range(50):
+                try:
+                    text = self.console_queue.get_nowait()
+                    texts.append(text)
+                except Empty:
+                    break
+
+            if texts:
+                combined = ''.join(texts)
+                try:
+                    current = dpg.get_value("console_output") or ""
+                    # Limit console buffer to avoid memory issues with huge outputs
+                    max_len = 100000
+                    new_value = current + combined
+                    if len(new_value) > max_len:
+                        new_value = new_value[-max_len:]
+                    dpg.set_value("console_output", new_value)
+                except Exception:
+                    pass  # UI not ready or widget doesn't exist
+        except Exception:
+            pass  # Ignore any queue processing errors
 
     def _create_input_panels(self):
         """Create input parameter panels."""
@@ -337,22 +383,28 @@ class TransformerOptimizerApp:
         # Optimization Settings
         with dpg.collapsing_header(label=" Optimization Settings", default_open=True, tag="opt_header"):
             # Method selection with GPU options
-            dpg.add_combo([
-                "Hybrid GPU (Recommended)",
+            method_combo = dpg.add_combo([
+                "Auto-Select (Best Available)",
+                "Hybrid GPU (Apple MPS)",
+                "CUDA Hybrid (NVIDIA GPU)",
                 "MPS GPU (Apple Silicon)",
                 "MLX GPU (Apple Silicon)",
                 "CUDA GPU (NVIDIA)",
                 "Differential Evolution (CPU)",
+                "Multi-Seed DE (CPU, Robust)",
                 "Parallel CPU Grid Search",
                 "Smart (CPU, Quick)"
             ], label="Method", tag="opt_method",
-               default_value="Hybrid GPU (Recommended)", width=220,
+               default_value="Auto-Select (Best Available)", width=220,
                callback=self._on_method_change)
-            with dpg.tooltip("opt_method"):
-                dpg.add_text("Hybrid GPU: 3-stage search", color=(180, 185, 200))
-                dpg.add_text("MPS/MLX/CUDA: Direct GPU grid", color=(180, 185, 200))
-                dpg.add_text("DE: Differential Evolution", color=(180, 185, 200))
-                dpg.add_text("Smart: Quick LHS + L-BFGS-B", color=(180, 185, 200))
+
+            # Tooltip for method selection - DearPyGui 2.11 compatible
+            with dpg.tooltip(parent="opt_method"):
+                dpg.add_text("Auto-Select: Picks best GPU", color=(180, 185, 200))
+                dpg.add_text("Hybrid: 3-stage GPU + CPU", color=(180, 185, 200))
+                dpg.add_text("MPS/MLX: Apple Silicon GPU", color=(180, 185, 200))
+                dpg.add_text("CUDA: NVIDIA GPU", color=(180, 185, 200))
+                dpg.add_text("Multi-Seed DE: 1-15 parallel seeds", color=(180, 185, 200))
 
             # Search depth - visible for hybrid method
             dpg.add_combo([
@@ -370,6 +422,13 @@ class TransformerOptimizerApp:
                 "Fine (Thorough)"
             ], label="Grid Resolution", tag="grid_resolution",
                default_value="Medium (Balanced)", width=220, show=False)
+
+            # Number of seeds for Multi-Seed DE
+            dpg.add_slider_int(label="DE Seeds", tag="de_seeds",
+                              default_value=5, min_value=1, max_value=15, width=140, show=False)
+            with dpg.tooltip(parent="de_seeds"):
+                dpg.add_text("Number of parallel DE runs", color=(180, 185, 200))
+                dpg.add_text("More seeds = more robust but slower", color=(180, 185, 200))
 
             dpg.add_input_int(label="Tolerance (%)", tag="tolerance",
                              default_value=25, min_value=0, max_value=100, width=140)
@@ -509,11 +568,6 @@ class TransformerOptimizerApp:
             except Exception:
                 pass  # Ignore if copy fails
 
-    def _append_console(self, text):
-        """Append text to console output."""
-        current = dpg.get_value("console_output")
-        dpg.set_value("console_output", current + text)
-
     def _create_results_panel(self):
         """Create the results display panel."""
         dpg.add_text(" OPTIMIZATION RESULTS", color=(100, 165, 255))
@@ -614,14 +668,24 @@ class TransformerOptimizerApp:
     def _on_method_change(self, sender, app_data):
         """Show/hide search depth or grid resolution based on method selection."""
         is_hybrid = "Hybrid" in app_data
+        is_auto = "Auto-Select" in app_data
         is_gpu = "MPS" in app_data or "MLX" in app_data or "CUDA" in app_data
         is_parallel = "Parallel" in app_data
+        is_de = "Differential" in app_data or "Multi-Seed" in app_data
+        is_multi_de = "Multi-Seed" in app_data
 
-        # Hybrid uses search_depth
+        # Hybrid and Auto-Select use search_depth (Auto-Select typically uses hybrid method)
         # Other GPU/Parallel methods use grid_resolution
         # CPU methods (DE, Smart) use neither
-        dpg.configure_item("search_depth", show=is_hybrid)
-        dpg.configure_item("grid_resolution", show=(is_gpu or is_parallel) and not is_hybrid)
+        dpg.configure_item("search_depth", show=is_hybrid or is_auto)
+        dpg.configure_item("grid_resolution", show=(is_gpu or is_parallel) and not is_hybrid and not is_auto)
+
+        # Show DE seeds slider only for Multi-Seed DE
+        dpg.configure_item("de_seeds", show=is_multi_de)
+
+        # DE methods work better with higher tolerance (550%)
+        if is_de:
+            dpg.set_value("tolerance", 550)
 
     def _apply_material_settings(self):
         """Apply material settings to mainRect module."""
@@ -775,16 +839,40 @@ class TransformerOptimizerApp:
         dpg.set_value("stage_text", "-")
         dpg.set_value("eta_text", "-")
 
-        # Clear and setup console capture
+        # Clear and setup console capture with thread-safe queue
         self._clear_console()
-        self.console_capture = ConsoleCapture(callback=self._append_console)
+        # Clear any stale items from queue
+        while not self.console_queue.empty():
+            try:
+                self.console_queue.get_nowait()
+            except Empty:
+                break
+        self.console_capture = ConsoleCapture(output_queue=self.console_queue)
+        # Start capture EARLY so all prints are captured (including auto-select messages)
+        self.console_capture.start_capture()
 
         # Update parameters
         self._update_mainrect_params()
 
         # Get optimization settings
         method_str = dpg.get_value("opt_method")
-        if "Hybrid" in method_str:
+        if "Auto-Select" in method_str:
+            # Auto-detect best available method
+            if mainRect.CUDA_AVAILABLE:
+                method = 'cuda_hybrid'
+                print("Auto-selected: CUDA Hybrid (NVIDIA GPU detected)")
+            elif mainRect.MPS_AVAILABLE:
+                method = 'hybrid'
+                print("Auto-selected: MPS Hybrid (Apple Silicon detected)")
+            elif mainRect.MLX_AVAILABLE:
+                method = 'mlx'
+                print("Auto-selected: MLX GPU (Apple Silicon detected)")
+            else:
+                method = 'de'
+                print("Auto-selected: Differential Evolution (No GPU detected)")
+        elif "CUDA Hybrid" in method_str:
+            method = 'cuda_hybrid'
+        elif "Hybrid" in method_str:
             method = 'hybrid'
         elif "MPS" in method_str:
             method = 'mps'
@@ -792,6 +880,8 @@ class TransformerOptimizerApp:
             method = 'mlx'
         elif "CUDA" in method_str:
             method = 'gpu'
+        elif "Multi-Seed" in method_str:
+            method = 'multi_de'
         elif "Differential" in method_str:
             method = 'de'
         elif "Parallel" in method_str:
@@ -822,6 +912,7 @@ class TransformerOptimizerApp:
         tolerance = dpg.get_value("tolerance")
         obround = dpg.get_value("obround")
         cooling_ducts = dpg.get_value("cooling_ducts")
+        de_seeds = dpg.get_value("de_seeds")
 
         def progress_callback(stage, progress, message, eta=None):
             """Handle progress updates from optimization."""
@@ -854,12 +945,11 @@ class TransformerOptimizerApp:
 
         def run_opt():
             try:
-                # Start console capture
-                self.console_capture.start_capture()
-
                 method_name = method.upper()
                 if method == 'hybrid':
-                    method_name = f"HYBRID ({search_depth.upper()})"
+                    method_name = f"MPS HYBRID ({search_depth.upper()})"
+                elif method == 'cuda_hybrid':
+                    method_name = f"CUDA HYBRID ({search_depth.upper()})"
                 dpg.set_value("progress_text", f"Running {method_name} optimization...")
                 dpg.set_value("progress_bar", 0.05)
 
@@ -872,7 +962,8 @@ class TransformerOptimizerApp:
                     print_result=True,  # Enable prints for console output
                     grid_resolution=grid_resolution,
                     search_depth=search_depth,
-                    progress_callback=progress_callback
+                    progress_callback=progress_callback,
+                    n_seeds=de_seeds
                 )
 
                 dpg.set_value("progress_bar", 1.0)
@@ -885,6 +976,7 @@ class TransformerOptimizerApp:
                     dpg.set_value("status_text", "Complete")
                     dpg.configure_item("status_text", color=(72, 199, 142))
                     dpg.set_value("progress_text", "Optimization complete!")
+                    playsound("quack.wav")
                 else:
                     dpg.set_value("status_text", "No valid design found")
                     dpg.configure_item("status_text", color=(255, 99, 99))
@@ -898,14 +990,17 @@ class TransformerOptimizerApp:
                 dpg.set_value("progress_bar", 0.0)
                 dpg.set_value("stage_text", "Stopped")
                 dpg.set_value("eta_text", "-")
-                self._append_console("\n--- Optimization stopped by user ---\n")
+                self.console_queue.put_nowait("\n--- Optimization stopped by user ---\n")
 
             except Exception as e:
                 dpg.set_value("status_text", "Error")
                 dpg.configure_item("status_text", color=(255, 99, 99))
                 dpg.set_value("progress_text", f"Error: {str(e)}")
                 import traceback
-                self._append_console(f"\nError: {str(e)}\n{traceback.format_exc()}")
+                try:
+                    self.console_queue.put_nowait(f"\nError: {str(e)}\n{traceback.format_exc()}")
+                except:
+                    pass
             finally:
                 # Stop console capture
                 if self.console_capture:
@@ -962,7 +1057,9 @@ class TransformerOptimizerApp:
         dpg.set_value("cost_core", f"${result['core_price']:.2f}")
         dpg.set_value("cost_lv", f"${result['lv_price']:.2f}")
         dpg.set_value("cost_hv", f"${result['hv_price']:.2f}")
-        dpg.set_value("cost_total", f"${result['total_price']:.2f}")
+        # Show actual material cost (sum of components), not penalized optimization price
+        total_cost = result['core_price'] + result['lv_price'] + result['hv_price']
+        dpg.set_value("cost_total", f"${total_cost:.2f}")
 
         # Time
         dpg.set_value("time_text", f"Optimization completed in {result['time']:.2f} seconds")
@@ -970,6 +1067,20 @@ class TransformerOptimizerApp:
     def run(self):
         """Run the application main loop."""
         while dpg.is_dearpygui_running():
+            # Process console queue directly in main loop for reliable updates
+            self._process_console_queue()
+
+            # Animate duck when optimizing
+            if self.is_optimizing:
+                current_time = time.time()
+                if current_time - self._last_duck_update > 0.05:
+                    self.duck_angle += 0.15
+                    self._draw_duck(30, 22, self.duck_angle)
+                    self._last_duck_update = current_time
+            elif self.duck_angle != 0:
+                self.duck_angle = 0
+                self._draw_duck(30, 22, 0)
+
             dpg.render_dearpygui_frame()
 
         dpg.destroy_context()

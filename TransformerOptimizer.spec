@@ -26,6 +26,7 @@ hidden_imports = [
     'scipy.special',
     'torch',
     'torch.mps',
+    'playsound3',
     'numba',
     'numba.core',
     'concurrent.futures',
@@ -131,5 +132,5 @@ else:
         target_arch=None,
         codesign_identity=None,
         entitlements_file=None,
-        icon=None,  # Add .ico path here if you have one
+        icon='program.ico',  # Add .ico path here if you have one
     )

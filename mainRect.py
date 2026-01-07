@@ -583,9 +583,10 @@ def CalculateFinalizedPriceIntolerant(LVNumberOfTurns, LVFoilHeight, LVFoilThicc
     penaltyForNll = NllExtraLoss * PENALTY_NLL_FACTOR
     penaltyForLL = LlExtraLoss * PENALTY_LL_FACTOR
     penaltyforUcc = UccExtraLoss * PENALTY_UCC_FACTOR
-    multiplier = 1
+    total_price = price + penaltyForNll + penaltyForLL + penaltyforUcc
+    # Mark as invalid (1e18) if exceeds tolerance - consistent with GPU implementation
     if (NllExtraLoss > (GUARANTEEDNLL * tolerance / 100)) or (LlExtraLoss > (GUARANTEEDLL * tolerance / 100)) or (UccExtraLoss > (GUARANTEEDUCC * tolerance / 100)):
-        multiplier = -1
+        total_price = 1e18
     if isFinal:
         print("#######################################################")
         print("BARE PRICE = ", price)
@@ -596,7 +597,7 @@ def CalculateFinalizedPriceIntolerant(LVNumberOfTurns, LVFoilHeight, LVFoilThicc
         print("Load losses = ", Ll)
         print("Ucc  = ", Ucc)
         print("Price Is = ", price + penaltyForNll + penaltyForLL + penaltyforUcc)
-    return (price + penaltyForNll + penaltyForLL + penaltyforUcc) * multiplier
+    return total_price
 
 
 @njit(fastmath=True)
@@ -627,9 +628,10 @@ def CalculateFinalizedPriceIntolerant_Optimized(LVNumberOfTurns, LVFoilHeight, L
     penaltyForNll = NllExtraLoss * PENALTY_NLL_FACTOR
     penaltyForLL = LlExtraLoss * PENALTY_LL_FACTOR
     penaltyforUcc = UccExtraLoss * PENALTY_UCC_FACTOR
-    multiplier = 1
+    total_price = price + penaltyForNll + penaltyForLL + penaltyforUcc
+    # Mark as invalid (1e18) if exceeds tolerance - consistent with GPU implementation
     if (NllExtraLoss > (GUARANTEEDNLL * tolerance / 100)) or (LlExtraLoss > (GUARANTEEDLL * tolerance / 100)) or (UccExtraLoss > (GUARANTEEDUCC * tolerance / 100)):
-        multiplier = -1
+        total_price = 1e18
     if isFinal:
         print("#######################################################")
         print("BARE PRICE = ", price)
@@ -642,7 +644,7 @@ def CalculateFinalizedPriceIntolerant_Optimized(LVNumberOfTurns, LVFoilHeight, L
         print("Cooling Ducts LV = ", LvCD)
         print("Cooling Ducts HV = ", HvCD)
         print("Price Is = ", (price + penaltyForNll + penaltyForLL + penaltyforUcc))
-    return (price + penaltyForNll + penaltyForLL + penaltyforUcc) * multiplier
+    return total_price
 
 
 # =============================================================================
@@ -813,7 +815,7 @@ def BucketFillingSmart(TurnsStep=1, ThicknessStep=0.2, HeightStep=50, CoreDiaSte
         core_diameter_t += CoreDiameterStepMinimum
 
     if printValuesFinal:
-        CalculateFinalizedPrice(foundLVTurns, foundLVHeight, foundLVThickness, foundHVThickness, foundHVLength, foundCoreDiameter, foundCoreLength, isFinal=True, PutCoolingDucts=PutCoolingDuct)
+        CalculateFinalizedPrice(foundLVTurns, foundLVHeight, foundLVThickness, foundHVThickness, foundHVLength, foundCoreDiameter, foundCoreLength, LVRATE, HVRATE, POWERRATING, FREQUENCY, materialToBeUsedWire_Resistivity, GUARANTEED_NO_LOAD_LOSS, GUARANTEED_LOAD_LOSS, GUARANTEED_UCC, isFinal=True, PutCoolingDucts=PutCoolingDuct)
         print("####################################################")
         print("Core Diameter = ", foundCoreDiameter)
         print("Core Length = ", foundCoreLength)
@@ -1155,14 +1157,15 @@ if CUDA_AVAILABLE:
         penalty_for_ll = ll_extra * penalty_ll
         penalty_for_ucc = ucc_extra * penalty_ucc
 
-        # Check tolerance
-        multiplier = 1.0
+        total_price = price + penalty_for_nll + penalty_for_ll + penalty_for_ucc
+
+        # Mark as invalid (1e18) if exceeds tolerance - consistent with MPS/MLX implementations
         if (nll_extra > (guaranteed_nll * tolerance / 100.0)) or \
            (ll_extra > (guaranteed_ll * tolerance / 100.0)) or \
            (ucc_extra > (guaranteed_ucc * tolerance / 100.0)):
-            multiplier = -1.0
+            total_price = 1e18
 
-        return (price + penalty_for_nll + penalty_for_ll + penalty_for_ucc) * multiplier
+        return total_price
 
     @cuda.jit
     def cuda_grid_search_kernel(combinations, results, params):
@@ -1450,7 +1453,9 @@ def StartGPU(tolerance=25, obround=True, put_cooling_ducts=True, print_result=Tr
         print("GPU OPTIMIZATION RESULTS")
         print(f"{'='*60}")
         CalculateFinalizedPrice(best_turns, best_height, best_thick, best_hvthick, best_hvlen,
-                                best_core_dia, best_core_len, isFinal=True, PutCoolingDucts=put_cooling_ducts)
+                                best_core_dia, best_core_len, LVRATE, HVRATE, POWERRATING, FREQUENCY,
+                                materialToBeUsedWire_Resistivity, GUARANTEED_NO_LOAD_LOSS,
+                                GUARANTEED_LOAD_LOSS, GUARANTEED_UCC, isFinal=True, PutCoolingDucts=put_cooling_ducts)
         print(f"\nCore Diameter: {best_core_dia:.1f} mm")
         print(f"Core Length: {best_core_len:.1f} mm")
         print(f"LV Turns: {best_turns:.0f}")
@@ -1944,7 +1949,9 @@ def StartMPS(tolerance=25, obround=True, put_cooling_ducts=True, print_result=Tr
         print("MPS GPU OPTIMIZATION RESULTS")
         print(f"{'='*60}")
         CalculateFinalizedPrice(best_turns, best_height, best_thick, best_hvthick, best_hvlen,
-                                best_core_dia, best_core_len, isFinal=True, PutCoolingDucts=put_cooling_ducts)
+                                best_core_dia, best_core_len, LVRATE, HVRATE, POWERRATING, FREQUENCY,
+                                materialToBeUsedWire_Resistivity, GUARANTEED_NO_LOAD_LOSS,
+                                GUARANTEED_LOAD_LOSS, GUARANTEED_UCC, isFinal=True, PutCoolingDucts=put_cooling_ducts)
         print(f"\nCore Diameter: {best_core_dia:.1f} mm")
         print(f"Core Length: {best_core_len:.1f} mm")
         print(f"LV Turns: {best_turns:.0f}")
@@ -2113,7 +2120,9 @@ def StartMLX(tolerance=25, obround=True, put_cooling_ducts=True, print_result=Tr
         print("MLX GPU OPTIMIZATION RESULTS")
         print(f"{'='*60}")
         CalculateFinalizedPrice(best_turns, best_height, best_thick, best_hvthick, best_hvlen,
-                                best_core_dia, best_core_len, isFinal=True, PutCoolingDucts=put_cooling_ducts)
+                                best_core_dia, best_core_len, LVRATE, HVRATE, POWERRATING, FREQUENCY,
+                                materialToBeUsedWire_Resistivity, GUARANTEED_NO_LOAD_LOSS,
+                                GUARANTEED_LOAD_LOSS, GUARANTEED_UCC, isFinal=True, PutCoolingDucts=put_cooling_ducts)
         print(f"\nCore Diameter: {best_core_dia:.1f} mm")
         print(f"Core Length: {best_core_len:.1f} mm")
         print(f"LV Turns: {best_turns:.0f}")
@@ -2510,7 +2519,9 @@ def StartMPSHybrid(tolerance=25, obround=True, put_cooling_ducts=True, print_res
         print("HYBRID OPTIMIZATION RESULTS")
         print(f"{'='*60}")
         CalculateFinalizedPrice(best_turns, best_height, best_thick, best_hvthick, best_hvlen,
-                                best_core_dia, best_core_len, isFinal=True, PutCoolingDucts=put_cooling_ducts)
+                                best_core_dia, best_core_len, LVRATE, HVRATE, POWERRATING, FREQUENCY,
+                                materialToBeUsedWire_Resistivity, GUARANTEED_NO_LOAD_LOSS,
+                                GUARANTEED_LOAD_LOSS, GUARANTEED_UCC, isFinal=True, PutCoolingDucts=put_cooling_ducts)
         print(f"\nCore Diameter: {best_core_dia:.1f} mm")
         print(f"Core Length: {best_core_len:.1f} mm")
         print(f"LV Turns: {best_turns:.0f}")
@@ -2521,6 +2532,354 @@ def StartMPSHybrid(tolerance=25, obround=True, put_cooling_ducts=True, print_res
         print(f"\nTotal optimization time: {total_time:.1f}s")
         print(f"  Stage 1 (coarse GPU): {stage1_time:.1f}s")
         print(f"  Stage 2 (fine GPU): {stage2_time:.1f}s")
+        print(f"  Stage 3 (local CPU w/ ducts): {stage3_time:.1f}s")
+        print(f"{'='*60}")
+
+    return {
+        'core_diameter': best_core_dia,
+        'core_length': best_core_len,
+        'lv_turns': best_turns,
+        'lv_height': best_height,
+        'lv_thickness': best_thick,
+        'hv_thickness': best_hvthick,
+        'hv_length': best_hvlen,
+        'price': best_price,
+        'time': total_time
+    }
+
+
+def StartCUDAHybrid(tolerance=25, obround=True, put_cooling_ducts=True, print_result=True, search_depth='normal', progress_callback=None):
+    """
+    CUDA GPU hybrid optimization - same algorithm as MPS but for NVIDIA GPUs.
+
+    Stage 1: Coarse GPU search to find top candidates
+    Stage 2: Fine GPU search in zoomed regions around best candidates
+    Stage 3: Local CPU search WITH cooling ducts for final refinement
+    """
+    def report_progress(stage, progress, message, eta=None):
+        if progress_callback:
+            try:
+                progress_callback(stage, progress, message, eta)
+            except (InterruptedError, KeyboardInterrupt):
+                raise
+            except:
+                pass
+
+    if not CUDA_AVAILABLE:
+        print("CUDA not available, falling back to CPU")
+        return StartSmartOptimized(tolerance, obround, put_cooling_ducts, use_de=True, print_result=print_result)
+
+    # Search depth presets (same as MPS)
+    if search_depth == 'fast':
+        coarse_steps = {'core_dia': 30, 'core_len': 3, 'turns': 5, 'height': 50, 'thick': 0.5, 'hvthick': 0.5, 'hvlen': 1.5}
+        fine_steps = {'core_dia': 10, 'turns': 2, 'height': 20, 'thick': 0.15, 'hvthick': 0.15, 'hvlen': 0.4}
+        local_ranges = {'turns': 2, 'height': 20, 'thick': 0.2, 'hvthick': 0.2, 'hvlen': 0.6, 'core_dia': 10, 'core_len': 15}
+        local_steps = {'height': 10, 'thick': 0.1, 'hvthick': 0.1, 'hvlen': 0.2, 'core_dia': 5, 'core_len': 10}
+        n_regions = 2
+        fine_core_len_steps = 5
+    elif search_depth == 'thorough':
+        coarse_steps = {'core_dia': 20, 'core_len': 5, 'turns': 3, 'height': 30, 'thick': 0.3, 'hvthick': 0.3, 'hvlen': 0.8}
+        fine_steps = {'core_dia': 4, 'turns': 1, 'height': 8, 'thick': 0.04, 'hvthick': 0.04, 'hvlen': 0.08}
+        local_ranges = {'turns': 4, 'height': 40, 'thick': 0.4, 'hvthick': 0.4, 'hvlen': 1.5, 'core_dia': 20, 'core_len': 30}
+        local_steps = {'height': 5, 'thick': 0.03, 'hvthick': 0.03, 'hvlen': 0.08, 'core_dia': 3, 'core_len': 5}
+        n_regions = 5
+        fine_core_len_steps = 12
+    elif search_depth == 'exhaustive':
+        coarse_steps = {'core_dia': 15, 'core_len': 6, 'turns': 2, 'height': 25, 'thick': 0.25, 'hvthick': 0.25, 'hvlen': 0.6}
+        fine_steps = {'core_dia': 2, 'turns': 1, 'height': 5, 'thick': 0.02, 'hvthick': 0.02, 'hvlen': 0.05}
+        local_ranges = {'turns': 5, 'height': 50, 'thick': 0.5, 'hvthick': 0.5, 'hvlen': 2.0, 'core_dia': 25, 'core_len': 40}
+        local_steps = {'height': 3, 'thick': 0.02, 'hvthick': 0.02, 'hvlen': 0.05, 'core_dia': 2, 'core_len': 3}
+        n_regions = 7
+        fine_core_len_steps = 15
+    else:  # normal
+        coarse_steps = {'core_dia': 25, 'core_len': 4, 'turns': 4, 'height': 40, 'thick': 0.4, 'hvthick': 0.4, 'hvlen': 1.2}
+        fine_steps = {'core_dia': 5, 'turns': 1, 'height': 10, 'thick': 0.05, 'hvthick': 0.05, 'hvlen': 0.1}
+        local_ranges = {'turns': 3, 'height': 30, 'thick': 0.3, 'hvthick': 0.3, 'hvlen': 1.0, 'core_dia': 15, 'core_len': 20}
+        local_steps = {'height': 10, 'thick': 0.05, 'hvthick': 0.05, 'hvlen': 0.1, 'core_dia': 5, 'core_len': 10}
+        n_regions = 3
+        fine_core_len_steps = 8
+
+    print("=" * 60)
+    print(f"CUDA HYBRID GPU OPTIMIZATION (depth: {search_depth})")
+    print("Stage 1: Coarse GPU search for promising regions")
+    print("Stage 2: Fine GPU zoom into best candidates")
+    print("Stage 3: Local CPU search WITH cooling ducts")
+    print("=" * 60)
+    total_start = time.time()
+    device = torch.device("cuda")
+
+    report_progress(1, 0.0, "Starting CUDA optimization...", None)
+
+    # STAGE 1: COARSE SEARCH
+    print("\n[STAGE 1] Coarse CUDA GPU search...")
+    report_progress(1, 0.01, "Stage 1: Coarse CUDA search...", None)
+
+    core_dia_step = coarse_steps['core_dia']
+    core_len_steps = coarse_steps['core_len']
+    turns_step = coarse_steps['turns']
+    height_step = coarse_steps['height']
+    thick_step = coarse_steps['thick']
+    hvthick_step = coarse_steps['hvthick']
+    hvlen_step = coarse_steps['hvlen']
+
+    core_dias = np.arange(CORE_MINIMUM, CORE_MAXIMUM + 1, core_dia_step, dtype=np.float32)
+    turns_arr = np.arange(FOILTURNS_MINIMUM, FOILTURNS_MAXIMUM + 1, turns_step, dtype=np.float32)
+    heights = np.arange(FOILHEIGHT_MINIMUM, FOILHEIGHT_MAXIMUM + 1, height_step, dtype=np.float32)
+    thicks = np.arange(FOILTHICKNESS_MINIMUM, FOILTHICKNESS_MAXIMUM + 0.001, thick_step, dtype=np.float32)
+    hvthicks = np.arange(HVTHICK_MINIMUM, HVTHICK_MAXIMUM + 0.001, hvthick_step, dtype=np.float32)
+    hvlens = np.arange(HV_LEN_MINIMUM, HV_LEN_MAXIMUM + 0.001, hvlen_step, dtype=np.float32)
+
+    n_coarse = _estimate_total_combinations(core_dias, turns_arr, heights, thicks, hvthicks, hvlens, core_len_steps, obround)
+    print(f"  Coarse grid: {n_coarse:,} combinations")
+
+    params = {
+        'tolerance': tolerance, 'lv_rate': float(LVRATE), 'hv_rate': float(HVRATE),
+        'power': float(POWERRATING), 'freq': float(FREQUENCY),
+        'resistivity': float(materialToBeUsedWire_Resistivity),
+        'guaranteed_nll': float(GUARANTEED_NO_LOAD_LOSS), 'guaranteed_ll': float(GUARANTEED_LOAD_LOSS),
+        'guaranteed_ucc': float(GUARANTEED_UCC), 'ucc_tol': float(UCC_TOLERANCE),
+        'dist_core_lv': float(DistanceCoreLV), 'main_gap': float(MainGap), 'phase_gap': float(PhaseGap),
+        'insulation_wire': float(INSULATION_THICKNESS_WIRE),
+        'lv_insulation_thick': float(LVInsulationThickness), 'hv_insulation_thick': float(HVInsulationThickness),
+        'duct_thick': float(COOLING_DUCT_THICKNESS), 'core_density': float(CoreDensity),
+        'core_fill_round': float(CoreFillingFactorRound), 'core_fill_rect': float(CoreFillingFactorRectangular),
+        'core_price_val': float(CorePricePerKg), 'foil_density': float(materialToBeUsedFoil_Density),
+        'foil_price': float(materialToBeUsedFoil_Price), 'wire_density': float(materialToBeUsedWire_Density),
+        'wire_price': float(materialToBeUsedWire_Price), 'add_loss_lv': float(AdditionalLossFactorLV),
+        'add_loss_hv': float(AdditionalLossFactorHV), 'penalty_nll': float(PENALTY_NLL_FACTOR),
+        'penalty_ll': float(PENALTY_LL_FACTOR), 'penalty_ucc': float(PENALTY_UCC_FACTOR)
+    }
+
+    all_prices = []
+    all_params = []
+
+    for batch in _generate_batches_streaming(core_dias, turns_arr, heights, thicks, hvthicks, hvlens, core_len_steps, obround, batch_size=2_000_000):
+        combs = torch.tensor(batch, device=device)
+        prices, _ = _compute_batch_mps(combs, device, **params)  # Works on CUDA too
+
+        valid_mask = prices < 1e17
+        valid_prices = prices[valid_mask].cpu().numpy()
+        valid_combs = combs[valid_mask].cpu().numpy()
+
+        all_prices.extend(valid_prices.tolist())
+        all_params.extend(valid_combs.tolist())
+
+        del combs, prices, batch
+        torch.cuda.empty_cache()
+
+    if not all_prices:
+        print("  No valid designs found in coarse search!")
+        return None
+
+    all_prices = np.array(all_prices)
+    all_params = np.array(all_params)
+    sorted_idx = np.argsort(all_prices)
+    top_candidates = []
+
+    for idx in sorted_idx:
+        candidate = all_params[idx]
+        price = all_prices[idx]
+        is_unique_region = True
+        for existing in top_candidates:
+            if abs(candidate[5] - existing[5]) < core_dia_step * 2 and abs(candidate[0] - existing[0]) < turns_step * 2:
+                is_unique_region = False
+                break
+        if is_unique_region:
+            top_candidates.append(candidate)
+            print(f"  Top candidate {len(top_candidates)}: price={price:.2f}, core_dia={candidate[5]:.0f}, turns={candidate[0]:.0f}")
+        if len(top_candidates) >= n_regions:
+            break
+
+    stage1_time = time.time() - total_start
+    print(f"  Stage 1 completed in {stage1_time:.1f}s")
+    report_progress(1, 0.33, f"Stage 1 complete: Found {len(top_candidates)} candidates", None)
+
+    # STAGE 2: FINE ZOOM
+    print("\n[STAGE 2] Fine zoom into top candidates...")
+    report_progress(2, 0.34, "Stage 2: Fine CUDA zoom...", None)
+
+    best_overall_price = 1e18
+    best_overall_params = None
+
+    for i, candidate in enumerate(top_candidates):
+        cand_turns, cand_height, cand_thick, cand_hvthick, cand_hvlen, cand_core_dia, cand_core_len = candidate
+
+        cd_min = max(CORE_MINIMUM, cand_core_dia - core_dia_step)
+        cd_max = min(CORE_MAXIMUM, cand_core_dia + core_dia_step)
+        turns_min = max(FOILTURNS_MINIMUM, cand_turns - turns_step)
+        turns_max = min(FOILTURNS_MAXIMUM, cand_turns + turns_step)
+        h_min = max(FOILHEIGHT_MINIMUM, cand_height - height_step)
+        h_max = min(FOILHEIGHT_MAXIMUM, cand_height + height_step)
+        th_min = max(FOILTHICKNESS_MINIMUM, cand_thick - thick_step)
+        th_max = min(FOILTHICKNESS_MAXIMUM, cand_thick + thick_step)
+        hvth_min = max(HVTHICK_MINIMUM, cand_hvthick - hvthick_step)
+        hvth_max = min(HVTHICK_MAXIMUM, cand_hvthick + hvthick_step)
+        hvl_min = max(HV_LEN_MINIMUM, cand_hvlen - hvlen_step)
+        hvl_max = min(HV_LEN_MAXIMUM, cand_hvlen + hvlen_step)
+
+        fine_core_dias = np.arange(cd_min, cd_max + 1, fine_steps['core_dia'], dtype=np.float32)
+        fine_turns = np.arange(turns_min, turns_max + 1, fine_steps['turns'], dtype=np.float32)
+        fine_heights = np.arange(h_min, h_max + 1, fine_steps['height'], dtype=np.float32)
+        fine_thicks = np.arange(th_min, th_max + 0.001, fine_steps['thick'], dtype=np.float32)
+        fine_hvthicks = np.arange(hvth_min, hvth_max + 0.001, fine_steps['hvthick'], dtype=np.float32)
+        fine_hvlens = np.arange(hvl_min, hvl_max + 0.001, fine_steps['hvlen'], dtype=np.float32)
+
+        n_fine = _estimate_total_combinations(fine_core_dias, fine_turns, fine_heights, fine_thicks, fine_hvthicks, fine_hvlens, fine_core_len_steps, obround)
+        print(f"  Region {i+1}: {n_fine:,} combinations around core_dia={cand_core_dia:.0f}, turns={cand_turns:.0f}")
+
+        region_progress = 0.34 + (0.33 * (i / len(top_candidates)))
+        report_progress(2, region_progress, f"Stage 2: Region {i+1}/{len(top_candidates)}", None)
+
+        region_best_price = 1e18
+        region_best_params = None
+
+        for batch in _generate_batches_streaming(fine_core_dias, fine_turns, fine_heights, fine_thicks, fine_hvthicks, fine_hvlens, fine_core_len_steps, obround, batch_size=2_000_000):
+            combs = torch.tensor(batch, device=device)
+            prices, _ = _compute_batch_mps(combs, device, **params)
+
+            best_idx = torch.argmin(prices).item()
+            best_price = prices[best_idx].item()
+
+            if best_price < region_best_price:
+                region_best_price = best_price
+                region_best_params = combs[best_idx].cpu().numpy()
+
+            del combs, prices, batch
+            torch.cuda.empty_cache()
+
+        print(f"    Best in region: price={region_best_price:.2f}")
+
+        if region_best_price < best_overall_price:
+            best_overall_price = region_best_price
+            best_overall_params = region_best_params
+
+    stage2_time = time.time() - total_start - stage1_time
+    print(f"  Stage 2 completed in {stage2_time:.1f}s")
+    report_progress(2, 0.67, f"Stage 2 complete: Best GPU price = {best_overall_price:.2f}", None)
+
+    if best_overall_params is None:
+        print("No valid design found!")
+        report_progress(3, 1.0, "No valid design found", None)
+        return None
+
+    # STAGE 3: LOCAL CPU REFINEMENT
+    print(f"\n[STAGE 3] Local CPU refinement WITH cooling ducts...")
+    report_progress(3, 0.68, "Stage 3: Local CPU refinement...", None)
+
+    gpu_turns = int(round(best_overall_params[0]))
+    gpu_height = float(best_overall_params[1])
+    gpu_thick = float(best_overall_params[2])
+    gpu_hvthick = float(best_overall_params[3])
+    gpu_hvlen = float(best_overall_params[4])
+    gpu_core_dia = float(best_overall_params[5])
+    gpu_core_len = float(best_overall_params[6])
+
+    best_price = 1e18
+    best_turns = gpu_turns
+    best_height = gpu_height
+    best_thick = gpu_thick
+    best_hvthick = gpu_hvthick
+    best_hvlen = gpu_hvlen
+    best_core_dia = gpu_core_dia
+    best_core_len = gpu_core_len
+
+    lr = local_ranges
+    ls = local_steps
+    turns_range = range(max(FOILTURNS_MINIMUM, gpu_turns - lr['turns']), min(FOILTURNS_MAXIMUM, gpu_turns + lr['turns'] + 1))
+    height_range = np.arange(max(FOILHEIGHT_MINIMUM, gpu_height - lr['height']), min(FOILHEIGHT_MAXIMUM, gpu_height + lr['height'] + 1), ls['height'])
+    thick_range = np.arange(max(FOILTHICKNESS_MINIMUM, gpu_thick - lr['thick']), min(FOILTHICKNESS_MAXIMUM, gpu_thick + lr['thick'] + 0.001), ls['thick'])
+    hvthick_range = np.arange(max(HVTHICK_MINIMUM, gpu_hvthick - lr['hvthick']), min(HVTHICK_MAXIMUM, gpu_hvthick + lr['hvthick'] + 0.001), ls['hvthick'])
+    hvlen_range = np.arange(max(HV_LEN_MINIMUM, gpu_hvlen - lr['hvlen']), min(HV_LEN_MAXIMUM, gpu_hvlen + lr['hvlen'] + 0.001), ls['hvlen'])
+    core_dia_range = np.arange(max(CORE_MINIMUM, gpu_core_dia - lr['core_dia']), min(CORE_MAXIMUM, gpu_core_dia + lr['core_dia'] + 1), ls['core_dia'])
+
+    if obround:
+        core_len_range = np.arange(max(0, gpu_core_len - lr['core_len']), min(gpu_core_dia, gpu_core_len + lr['core_len'] + 1), ls['core_len'])
+    else:
+        core_len_range = [0]
+
+    n_local = len(turns_range) * len(height_range) * len(thick_range) * len(hvthick_range) * len(hvlen_range) * len(core_dia_range) * len(core_len_range)
+    print(f"  Local search: {n_local:,} combinations (with cooling ducts)")
+
+    eval_count = 0
+    last_progress_report = 0
+    stage3_start = time.time()
+
+    for cd in core_dia_range:
+        for cl in core_len_range:
+            for t in turns_range:
+                for h in height_range:
+                    for th in thick_range:
+                        for hvth in hvthick_range:
+                            for hvl in hvlen_range:
+                                if hvl < hvth:
+                                    continue
+                                eval_count += 1
+
+                                if eval_count - last_progress_report >= 5000:
+                                    last_progress_report = eval_count
+                                    stage3_progress = 0.68 + (0.30 * eval_count / max(n_local, 1))
+                                    elapsed = time.time() - stage3_start
+                                    eta = (elapsed / eval_count) * (n_local - eval_count) if eval_count > 0 else None
+                                    report_progress(3, stage3_progress, f"Stage 3: {eval_count:,}/{n_local:,}", eta)
+
+                                price = CalculateFinalizedPriceIntolerant_Optimized(
+                                    t, h, th, hvth, hvl, cd, cl,
+                                    LVRATE, HVRATE, POWERRATING, FREQUENCY,
+                                    materialToBeUsedWire_Resistivity,
+                                    GUARANTEED_NO_LOAD_LOSS, GUARANTEED_LOAD_LOSS, GUARANTEED_UCC,
+                                    tolerance, False, put_cooling_ducts
+                                )
+
+                                if 0 < price < best_price:
+                                    best_price = price
+                                    best_turns = t
+                                    best_height = h
+                                    best_thick = th
+                                    best_hvthick = hvth
+                                    best_hvlen = hvl
+                                    best_core_dia = cd
+                                    best_core_len = cl
+
+    stage3_time = time.time() - total_start - stage1_time - stage2_time
+
+    if best_price >= 1e17:
+        print(f"  No valid design found in local search!")
+        best_turns, best_height, best_thick = gpu_turns, gpu_height, gpu_thick
+        best_hvthick, best_hvlen = gpu_hvthick, gpu_hvlen
+        best_core_dia, best_core_len = gpu_core_dia, gpu_core_len
+        best_price = CalculateFinalizedPriceIntolerant_Optimized(
+            best_turns, best_height, best_thick, best_hvthick, best_hvlen,
+            best_core_dia, best_core_len,
+            LVRATE, HVRATE, POWERRATING, FREQUENCY, materialToBeUsedWire_Resistivity,
+            GUARANTEED_NO_LOAD_LOSS, GUARANTEED_LOAD_LOSS, GUARANTEED_UCC,
+            tolerance, False, put_cooling_ducts
+        )
+        if best_price < 0:
+            best_price = abs(best_price)
+    else:
+        print(f"  Evaluated {eval_count:,} designs, best price: {best_price:.2f}")
+
+    total_time = time.time() - total_start
+    report_progress(3, 1.0, f"Complete! Best price: {best_price:.2f}", None)
+
+    if print_result:
+        print(f"\n{'='*60}")
+        print("CUDA HYBRID OPTIMIZATION RESULTS")
+        print(f"{'='*60}")
+        CalculateFinalizedPrice(best_turns, best_height, best_thick, best_hvthick, best_hvlen,
+                                best_core_dia, best_core_len, LVRATE, HVRATE, POWERRATING, FREQUENCY,
+                                materialToBeUsedWire_Resistivity, GUARANTEED_NO_LOAD_LOSS,
+                                GUARANTEED_LOAD_LOSS, GUARANTEED_UCC, isFinal=True, PutCoolingDucts=put_cooling_ducts)
+        print(f"\nCore Diameter: {best_core_dia:.1f} mm")
+        print(f"Core Length: {best_core_len:.1f} mm")
+        print(f"LV Turns: {best_turns:.0f}")
+        print(f"LV Foil Height: {best_height:.1f} mm")
+        print(f"LV Foil Thickness: {best_thick:.2f} mm")
+        print(f"HV Wire Thickness: {best_hvthick:.2f} mm")
+        print(f"HV Wire Length: {best_hvlen:.2f} mm")
+        print(f"\nTotal optimization time: {total_time:.1f}s")
+        print(f"  Stage 1 (coarse CUDA): {stage1_time:.1f}s")
+        print(f"  Stage 2 (fine CUDA): {stage2_time:.1f}s")
         print(f"  Stage 3 (local CPU w/ ducts): {stage3_time:.1f}s")
         print(f"{'='*60}")
 
@@ -2725,7 +3084,12 @@ def StartOptimized(tolerance=25, obround=True, put_cooling_ducts=True, print_res
         print(f"HV Length: {best[5]:.2f}")
         print("=" * 50)
         print("\nVerifying with detailed calculation:")
-        CalculateFinalizedPrice(int(best[1]), best[2], best[3], best[4], best[5], best[6], best[7], isFinal=True, PutCoolingDucts=put_cooling_ducts)
+        CalculateFinalizedPrice(
+            int(best[1]), best[2], best[3], best[4], best[5], best[6], best[7],
+            LVRATE, HVRATE, POWERRATING, FREQUENCY, materialToBeUsedWire_Resistivity,
+            GUARANTEED_NO_LOAD_LOSS, GUARANTEED_LOAD_LOSS, GUARANTEED_UCC,
+            isFinal=True, PutCoolingDucts=put_cooling_ducts
+        )
 
     return _build_result_dict(
         lv_turns=best[1], lv_height=best[2], lv_thickness=best[3],
@@ -2884,6 +3248,200 @@ def global_search_de(obround=True, put_cooling_ducts=True, tolerance=25, maxiter
     }
 
 
+def global_search_de_multiseed(obround=True, put_cooling_ducts=True, tolerance=25, maxiter=50, popsize=10,
+                                n_seeds=5, progress_callback=None):
+    """
+    Multi-seed Differential Evolution for more robust global optimization.
+
+    Runs multiple DE optimizations with different predetermined seeds in parallel,
+    then keeps the best (cheapest) result. This helps escape local minima.
+
+    Args:
+        obround: Whether core is obround shape
+        put_cooling_ducts: Whether to calculate cooling ducts
+        tolerance: Tolerance percentage for constraints
+        maxiter: Maximum iterations per DE run
+        popsize: Population size per DE run
+        n_seeds: Number of different seeds to try (default 5)
+        progress_callback: Optional function(stage, progress, message, eta) for UI updates
+
+    Returns:
+        Dictionary with optimal parameters
+    """
+    if not SCIPY_AVAILABLE:
+        print("scipy not available, falling back to parallel grid search")
+        return StartOptimized(tolerance, obround, put_cooling_ducts)
+
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    # Predetermined seeds for reproducibility (up to 15)
+    ALL_SEEDS = [42, 123, 456, 789, 1001, 2023, 3141, 5926, 8675, 3090, 1337, 2718, 6174, 9999, 4242]
+    SEEDS = ALL_SEEDS[:min(n_seeds, 15)]
+
+    print(f"Running Multi-Seed Differential Evolution ({n_seeds} seeds)...")
+    print(f"Seeds: {SEEDS}")
+    start_time = time.time()
+
+    bounds = get_parameter_bounds(obround)
+
+    def report_progress(stage, progress, message, eta=None):
+        if progress_callback:
+            try:
+                progress_callback(stage, progress, message, eta)
+            except:
+                pass
+
+    def run_single_de(seed_idx, seed):
+        """Run a single DE optimization with given seed."""
+        try:
+            result = differential_evolution(
+                func=lambda x: objective_for_scipy(x, put_cooling_ducts, tolerance),
+                bounds=bounds,
+                maxiter=maxiter,
+                popsize=popsize,
+                workers=1,
+                polish=True,
+                seed=seed,
+                disp=False  # Quiet mode for parallel runs
+            )
+            return seed_idx, seed, result.fun, result.x
+        except Exception as e:
+            print(f"  Seed {seed} failed: {e}")
+            return seed_idx, seed, float('inf'), None
+
+    report_progress("Multi-DE", 0.0, f"Starting {n_seeds} parallel DE runs...", None)
+
+    # Run all seeds in parallel using ThreadPoolExecutor
+    results = []
+    completed = 0
+
+    with ThreadPoolExecutor(max_workers=min(n_seeds, 4)) as executor:
+        futures = {executor.submit(run_single_de, i, seed): (i, seed) for i, seed in enumerate(SEEDS)}
+
+        for future in as_completed(futures):
+            seed_idx, seed = futures[future]
+            try:
+                result = future.result()
+                results.append(result)
+                completed += 1
+
+                _, s, price, _ = result
+                if price < float('inf'):
+                    print(f"  Seed {s}: price = {price:.2f}")
+
+                progress = completed / n_seeds
+                elapsed = time.time() - start_time
+                eta = (elapsed / completed) * (n_seeds - completed) if completed > 0 else None
+                report_progress("Multi-DE", progress * 0.9, f"Completed {completed}/{n_seeds} seeds", eta)
+
+            except Exception as e:
+                print(f"  Seed {seed} exception: {e}")
+                completed += 1
+
+    # Find the best result
+    valid_results = [(idx, seed, price, x) for idx, seed, price, x in results if x is not None and price < float('inf')]
+
+    if not valid_results:
+        print("All DE runs failed!")
+        return None
+
+    # Sort by price and get the best
+    valid_results.sort(key=lambda r: r[2])
+    best_idx, best_seed, best_price, best_x = valid_results[0]
+
+    elapsed = time.time() - start_time
+    print(f"\nMulti-seed DE completed in {elapsed:.2f}s")
+    print(f"Best result from seed {best_seed}: price = {best_price:.2f}")
+
+    # Show all results for comparison
+    print("\nAll results (sorted by price):")
+    for idx, seed, price, x in valid_results[:5]:
+        print(f"  Seed {seed}: {price:.2f}")
+
+    report_progress("Multi-DE", 1.0, f"Best price: {best_price:.2f} (seed {best_seed})", None)
+
+    return {
+        "price": best_price,
+        "corediameter": best_x[5],
+        "corelength": best_x[6],
+        "lvfoilturns": int(round(best_x[0])),
+        "lvfoilheight": best_x[1],
+        "lvfoilthickness": best_x[2],
+        "hvthickness": best_x[3],
+        "hvlength": best_x[4],
+        "best_seed": best_seed,
+        "n_seeds_tried": n_seeds
+    }
+
+
+def StartMultiSeedDE(tolerance=25, obround=True, put_cooling_ducts=True, print_result=True,
+                     n_seeds=5, progress_callback=None):
+    """
+    Multi-seed Differential Evolution optimization.
+
+    Runs multiple DE optimizations with different seeds and keeps the best result.
+    More robust than single-seed DE for finding the global optimum.
+    """
+    print("=" * 60)
+    print(f"MULTI-SEED DIFFERENTIAL EVOLUTION ({n_seeds} seeds)")
+    print("=" * 60)
+    start_time = time.time()
+
+    interim = global_search_de_multiseed(
+        obround=obround,
+        put_cooling_ducts=put_cooling_ducts,
+        tolerance=tolerance,
+        n_seeds=n_seeds,
+        progress_callback=progress_callback
+    )
+
+    if interim is None:
+        print("Multi-seed DE failed!")
+        return None
+
+    best_price = interim["price"]
+    lv_turns = interim["lvfoilturns"]
+    lv_height = interim["lvfoilheight"]
+    lv_thickness = interim["lvfoilthickness"]
+    hv_thickness = interim["hvthickness"]
+    hv_length = interim["hvlength"]
+    core_diameter = interim["corediameter"]
+    core_length = interim["corelength"]
+    best_seed = interim.get("best_seed", "unknown")
+
+    total_time = time.time() - start_time
+
+    if print_result:
+        print("=" * 60)
+        print(f"OPTIMIZATION COMPLETED in {total_time:.2f} seconds")
+        print(f"Best seed: {best_seed}")
+        print("=" * 60)
+        print(f"Best Price: {best_price:.2f}")
+        print(f"Core Diameter: {core_diameter:.1f}")
+        print(f"Core Length: {core_length:.1f}")
+        print(f"LV Turns: {lv_turns}")
+        print(f"LV Height: {lv_height:.1f}")
+        print(f"LV Thickness: {lv_thickness:.2f}")
+        print(f"HV Thickness: {hv_thickness:.2f}")
+        print(f"HV Length: {hv_length:.2f}")
+        print("=" * 60)
+        print("\nVerifying with detailed calculation:")
+        CalculateFinalizedPrice(
+            lv_turns, lv_height, lv_thickness, hv_thickness, hv_length,
+            core_diameter, core_length, LVRATE, HVRATE, POWERRATING, FREQUENCY,
+            materialToBeUsedWire_Resistivity, GUARANTEED_NO_LOAD_LOSS,
+            GUARANTEED_LOAD_LOSS, GUARANTEED_UCC,
+            isFinal=True, PutCoolingDucts=put_cooling_ducts
+        )
+
+    return _build_result_dict(
+        lv_turns=lv_turns, lv_height=lv_height, lv_thickness=lv_thickness,
+        hv_thickness=hv_thickness, hv_length=hv_length,
+        core_diameter=core_diameter, core_length=core_length,
+        total_price=best_price, elapsed_time=total_time, put_cooling_ducts=put_cooling_ducts
+    )
+
+
 def StartSmartOptimized(tolerance=25, obround=True, put_cooling_ducts=True, use_de=False, n_lhs_samples=3000, print_result=True):
     """Combined smart optimization: LHS coarse search + L-BFGS-B fine search."""
     print("=" * 60)
@@ -2937,7 +3495,10 @@ def StartSmartOptimized(tolerance=25, obround=True, put_cooling_ducts=True, use_
         print("\nVerifying with detailed calculation:")
         CalculateFinalizedPrice(
             lv_turns, lv_height, lv_thickness, hv_thickness, hv_length,
-            core_diameter, core_length, isFinal=True, PutCoolingDucts=put_cooling_ducts
+            core_diameter, core_length, LVRATE, HVRATE, POWERRATING, FREQUENCY,
+            materialToBeUsedWire_Resistivity, GUARANTEED_NO_LOAD_LOSS,
+            GUARANTEED_LOAD_LOSS, GUARANTEED_UCC,
+            isFinal=True, PutCoolingDucts=put_cooling_ducts
         )
 
     return _build_result_dict(
@@ -3051,7 +3612,7 @@ def _build_result_dict(lv_turns, lv_height, lv_thickness, hv_thickness, hv_lengt
 # MAIN ENTRY POINT
 # =============================================================================
 
-def StartFast(tolerance=25, obround=True, put_cooling_ducts=True, method='de', print_result=True, grid_resolution='coarse', search_depth='normal', progress_callback=None):
+def StartFast(tolerance=25, obround=True, put_cooling_ducts=True, method='de', print_result=True, grid_resolution='coarse', search_depth='normal', progress_callback=None, n_seeds=5):
     """
     Fast transformer optimization with multiple algorithm options.
 
@@ -3065,12 +3626,14 @@ def StartFast(tolerance=25, obround=True, put_cooling_ducts=True, method='de', p
             - 'mlx': Apple MLX GPU (Apple Silicon)
             - 'gpu': CUDA GPU (NVIDIA GPUs)
             - 'de': Differential Evolution (CPU, good quality)
+            - 'multi_de': Multi-seed DE (CPU, more robust than single DE)
             - 'smart': LHS + L-BFGS-B (CPU)
             - 'parallel': Numba parallel CPU grid search
         print_result: Print detailed results
         grid_resolution: For mps/mlx/gpu/parallel methods - 'coarse', 'medium', 'fine'
         search_depth: For hybrid method - 'fast', 'normal', 'thorough', 'exhaustive'
         progress_callback: Optional function(stage, progress, message, eta) for UI updates
+        n_seeds: For multi_de method - number of parallel DE seeds (1-15, default 5)
 
     Returns:
         Dictionary with optimal parameters, or None if no valid design found
@@ -3101,6 +3664,8 @@ def StartFast(tolerance=25, obround=True, put_cooling_ducts=True, method='de', p
     try:
         if method == 'hybrid':
             result = StartMPSHybrid(tolerance, obround, put_cooling_ducts, print_result, search_depth=search_depth, progress_callback=progress_callback)
+        elif method == 'cuda_hybrid':
+            result = StartCUDAHybrid(tolerance, obround, put_cooling_ducts, print_result, search_depth=search_depth, progress_callback=progress_callback)
         elif method == 'mps':
             result = StartMPS(tolerance, obround, put_cooling_ducts, print_result, grid_resolution=grid_resolution, progress_callback=progress_callback)
         elif method == 'mlx':
@@ -3113,6 +3678,8 @@ def StartFast(tolerance=25, obround=True, put_cooling_ducts=True, method='de', p
             result = StartSmartOptimized(tolerance, obround, put_cooling_ducts, use_de=False, print_result=print_result)
         elif method == 'de':
             result = StartSmartOptimized(tolerance, obround, put_cooling_ducts, use_de=True, print_result=print_result)
+        elif method == 'multi_de':
+            result = StartMultiSeedDE(tolerance, obround, put_cooling_ducts, print_result=print_result, n_seeds=n_seeds, progress_callback=progress_callback)
         else:
             print(f"Unknown method '{method}', using 'hybrid'")
             result = StartMPSHybrid(tolerance, obround, put_cooling_ducts, print_result, search_depth=search_depth, progress_callback=progress_callback)
