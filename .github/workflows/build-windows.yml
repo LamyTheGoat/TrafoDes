@@ -25,10 +25,10 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install dearpygui numpy scipy numba pyinstaller
+          pip install dearpygui numpy scipy numba pyinstaller playsound3
           pip install torch --index-url https://download.pytorch.org/whl/cpu
 
-      - name: Update expiration date
+      - name: Set expiration date
         run: |
           python -c "
           import datetime
@@ -52,7 +52,7 @@ jobs:
 
       - name: Build with PyInstaller
         run: |
-          pyinstaller --clean --onefile --noconsole --name TransformerOptimizer launcher.py --hidden-import dearpygui --hidden-import numpy --hidden-import scipy --hidden-import scipy.optimize --hidden-import numba
+          pyinstaller TransformerOptimizer.spec --clean
 
       - name: Upload Windows executable
         uses: actions/upload-artifact@v4

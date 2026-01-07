@@ -1,0 +1,30 @@
+# Transformer Design Optimizer - Dependencies
+# Install with: pip install -r requirements.txt
+
+# Core dependencies
+dearpygui>=1.11
+numpy>=1.24
+scipy>=1.10
+numba>=0.57
+
+# GPU acceleration
+torch>=2.0
+
+# Audio
+playsound3>=2.0
+
+# CAD export (optional)
+ezdxf>=1.0
+
+# Build tools (optional - only needed for creating executables)
+pyinstaller>=6.0
+
+# Apple Silicon GPU optimization (macOS only, optional)
+# Uncomment if on Apple Silicon:
+# mlx>=0.1
+
+# Alternative web interface (optional)
+# Uncomment if using Streamlit version:
+# streamlit>=1.30
+# plotly>=5.18
+# pandas>=2.0
