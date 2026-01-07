@@ -1,0 +1,48 @@
+# Python
+*.pyc
+__pycache__/
+*.pyo
+*.pyd
+.Python
+*.so
+
+# Virtual Environment
+.venv/
+venv/
+ENV/
+
+# PyInstaller build artifacts
+build/
+dist/
+*.spec
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Testing/Coverage
+.coverage
+htmlcov/
+html/
+.pytest_cache/
+.mutmut-cache/
+mutmut.xml
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Logs
+*.log
+
+# Claude Code
+.claude/
