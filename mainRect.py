@@ -3088,10 +3088,15 @@ def StartFast(tolerance=25, obround=True, put_cooling_ducts=True, method='de', p
         - 'hybrid' + 'normal': ~30s (GOOD DEFAULT)
         - 'de': ~3-5s (quick but may miss global optimum)
     """
+    import sys
     print(f"\n{'='*60}")
     print(f"TRANSFORMER OPTIMIZATION - Method: {method.upper()}")
     print(f"Available GPU backends: {', '.join(GPU_OPTIONS) if GPU_OPTIONS else 'None'}")
     print(f"{'='*60}\n")
+    sys.stdout.flush()
+
+    # Ensure JIT functions are compiled before starting optimization
+    ensure_jit_ready()
 
     try:
         if method == 'hybrid':
@@ -3219,11 +3224,21 @@ def _warmup_jit():
     )
 
 
-# Run warmup at module import
-print("Pre-compiling JIT functions...", end=" ", flush=True)
-_warmup_start = time.time()
-_warmup_jit()
-print(f"done ({time.time() - _warmup_start:.1f}s)")
+# Lazy JIT warmup - only runs when first optimization is called
+_jit_warmed_up = False
+
+def ensure_jit_ready():
+    """Ensure JIT functions are compiled. Call before first optimization."""
+    global _jit_warmed_up
+    if not _jit_warmed_up:
+        import sys
+        print("Pre-compiling JIT functions...", end=" ", flush=True)
+        sys.stdout.flush()
+        _warmup_start = time.time()
+        _warmup_jit()
+        print(f"done ({time.time() - _warmup_start:.1f}s)", flush=True)
+        sys.stdout.flush()
+        _jit_warmed_up = True
 
 
 if __name__ == '__main__':
