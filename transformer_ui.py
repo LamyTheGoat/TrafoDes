@@ -976,7 +976,10 @@ class TransformerOptimizerApp:
                     dpg.set_value("status_text", "Complete")
                     dpg.configure_item("status_text", color=(72, 199, 142))
                     dpg.set_value("progress_text", "Optimization complete!")
-                    playsound("quack.wav")
+                    try:
+                        playsound("quack.wav")
+                    except :
+                        None
                 else:
                     dpg.set_value("status_text", "No valid design found")
                     dpg.configure_item("status_text", color=(255, 99, 99))
