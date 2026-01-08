@@ -16,6 +16,12 @@ from queue import Queue, Empty
 # Add current directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+def resource_path(relative_path):
+    """Get absolute path to resource, works for dev and for PyInstaller bundle."""
+    if hasattr(sys, '_MEIPASS'):
+        return os.path.join(sys._MEIPASS, relative_path)
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), relative_path)
+
 import mainRect
 
 
@@ -977,9 +983,9 @@ class TransformerOptimizerApp:
                     dpg.configure_item("status_text", color=(72, 199, 142))
                     dpg.set_value("progress_text", "Optimization complete!")
                     try:
-                        playsound("quack.wav")
-                    except :
-                        None
+                        playsound(resource_path("quack.wav"))
+                    except:
+                        pass
                 else:
                     dpg.set_value("status_text", "No valid design found")
                     dpg.configure_item("status_text", color=(255, 99, 99))

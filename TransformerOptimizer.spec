@@ -14,7 +14,9 @@ is_windows = platform.system() == 'Windows'
 is_macos = platform.system() == 'Darwin'
 
 # Data files to include
-datas = []  # Add any data files here if needed
+datas = [
+    ('quack.wav', '.'),  # Include quack.wav in the bundle root
+]
 
 # Hidden imports that PyInstaller might miss
 hidden_imports = [
