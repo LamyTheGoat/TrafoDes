@@ -3161,9 +3161,9 @@ def StartMPSHybrid(tolerance=25, obround=True, put_cooling_ducts=True, print_res
         # ~10-30min - maximum precision
         coarse_steps = {'core_dia': 15, 'core_len': 6, 'turns': 2, 'height': 25, 'thick': 0.25, 'hvthick': 0.25, 'hvlen': 0.6}
         fine_steps = {'core_dia': 2, 'turns': 1, 'height': 5, 'thick': 0.02, 'hvthick': 0.02, 'hvlen': 0.05}
-        # Stage 3 local search - keep combinations manageable (~5-10M max)
-        local_ranges = {'turns': 4, 'height': 40, 'thick': 0.4, 'hvthick': 0.4, 'hvlen': 1.5, 'core_dia': 20, 'core_len': 30}
-        local_steps = {'height': 6, 'thick': 0.06, 'hvthick': 0.06, 'hvlen': 0.12, 'core_dia': 4, 'core_len': 6}
+        # Stage 3 local search - high resolution for fine details (~10-20M combinations)
+        local_ranges = {'turns': 5, 'height': 50, 'thick': 0.5, 'hvthick': 0.5, 'hvlen': 2.0, 'core_dia': 25, 'core_len': 40}
+        local_steps = {'height': 4, 'thick': 0.04, 'hvthick': 0.04, 'hvlen': 0.08, 'core_dia': 3, 'core_len': 4}
         n_regions = 7
         fine_core_len_steps = 15
     else:  # normal (default)
@@ -3634,9 +3634,9 @@ def StartCUDAHybrid(tolerance=25, obround=True, put_cooling_ducts=True, print_re
     elif search_depth == 'exhaustive':
         coarse_steps = {'core_dia': 15, 'core_len': 6, 'turns': 2, 'height': 25, 'thick': 0.25, 'hvthick': 0.25, 'hvlen': 0.6}
         fine_steps = {'core_dia': 2, 'turns': 1, 'height': 5, 'thick': 0.02, 'hvthick': 0.02, 'hvlen': 0.05}
-        # Stage 3 local search - keep combinations manageable (~5-10M max)
-        local_ranges = {'turns': 4, 'height': 40, 'thick': 0.4, 'hvthick': 0.4, 'hvlen': 1.5, 'core_dia': 20, 'core_len': 30}
-        local_steps = {'height': 6, 'thick': 0.06, 'hvthick': 0.06, 'hvlen': 0.12, 'core_dia': 4, 'core_len': 6}
+        # Stage 3 local search - high resolution for fine details (~10-20M combinations)
+        local_ranges = {'turns': 5, 'height': 50, 'thick': 0.5, 'hvthick': 0.5, 'hvlen': 2.0, 'core_dia': 25, 'core_len': 40}
+        local_steps = {'height': 4, 'thick': 0.04, 'hvthick': 0.04, 'hvlen': 0.08, 'core_dia': 3, 'core_len': 4}
         n_regions = 7
         fine_core_len_steps = 15
     else:  # normal
