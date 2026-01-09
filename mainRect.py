@@ -177,6 +177,11 @@ materialCore_Density = CoreDensity
 materialCore_Price = CorePricePerKg
 oilToBeUsed_Factor = 1  # OIL_MINERAL_FACTOR
 
+# HV Wire Shape Option
+# When True, HV wire is circular (radius = HVWireThickness / 2)
+# When False, HV wire is rectangular with rounded corners (default)
+HV_WIRE_CIRCULAR = False
+
 
 # =============================================================================
 # CORE CALCULATION FUNCTIONS
@@ -193,6 +198,8 @@ def Clamp(Number, Minimum, Maximum):
 
 @njit(fastmath=True)
 def CalculateVoltsPerTurns(LVRate, LVTurns):
+    if LVTurns <= 0:
+        return 1e18
     return LVRate / LVTurns
 
 
@@ -204,7 +211,13 @@ def CalculateCoreSection(CoreDiameter, CoreLength):
 
 @njit(fastmath=True)
 def CalculateInduction(VolsPerTurn, CoreDiameter, CoreLength):
-    return (VolsPerTurn * 10000) / (math.sqrt(2) * math.pi * FREQUENCY * CalculateCoreSection(CoreDiameter, CoreLength))
+    core_section = CalculateCoreSection(CoreDiameter, CoreLength)
+    if core_section <= 0:
+        return 1e18
+    denom = math.sqrt(2) * math.pi * FREQUENCY * core_section
+    if denom <= 0:
+        return 1e18
+    return (VolsPerTurn * 10000) / denom
 
 
 @njit(fastmath=True)
@@ -215,53 +228,57 @@ def CalculateWattsPerKG(Induction):
 
 
 @njit(fastmath=True)
-def CalculateRadialThicknessLV(LVNumberOfTurns, LVFoilThiccnes, NumberOfDucts=0, ThicknessOfDucts=COOLING_DUCT_THICKNESS):
-    return LVNumberOfTurns * LVFoilThiccnes + ((LVNumberOfTurns - 1) * LVInsulationThickness) + \
+def CalculateRadialThicknessLV(LVNumberOfTurns, LVFoilThickness, NumberOfDucts=0, ThicknessOfDucts=COOLING_DUCT_THICKNESS):
+    return LVNumberOfTurns * LVFoilThickness + ((LVNumberOfTurns - 1) * LVInsulationThickness) + \
            (NumberOfDucts * (ThicknessOfDucts + 0.5))
 
 
 @njit(fastmath=True)
-def CalculateAverageDiameterLV(LVNumberOfTurns, LVFoilThiccnes, CoreDiameter, CoreLength, NumberOfDucts):
-    return CoreDiameter + (2 * DistanceCoreLV) + CalculateRadialThicknessLV(LVNumberOfTurns, LVFoilThiccnes, NumberOfDucts) + \
+def CalculateAverageDiameterLV(LVNumberOfTurns, LVFoilThickness, CoreDiameter, CoreLength, NumberOfDucts):
+    return CoreDiameter + (2 * DistanceCoreLV) + CalculateRadialThicknessLV(LVNumberOfTurns, LVFoilThickness, NumberOfDucts) + \
            (2 * CoreLength / math.pi)
 
 
 @njit(fastmath=True)
-def CalculateTotalLengthCoilLV(LVNumberOfTurns, LVFoilThiccnes, CoreDiameter, CoreLength, NumberOfDucts):
-    return CalculateAverageDiameterLV(LVNumberOfTurns, LVFoilThiccnes, CoreDiameter, CoreLength, NumberOfDucts) * \
+def CalculateTotalLengthCoilLV(LVNumberOfTurns, LVFoilThickness, CoreDiameter, CoreLength, NumberOfDucts):
+    return CalculateAverageDiameterLV(LVNumberOfTurns, LVFoilThickness, CoreDiameter, CoreLength, NumberOfDucts) * \
            math.pi * LVNumberOfTurns
 
 
 @njit(fastmath=True)
-def CalculateRadialThiccnessHV(LVFoilHeight, LVNumberOfTurns, HVWireThickness, HVWireLength, NumberOfDucts=0, ThicknessOfDucts=COOLING_DUCT_THICKNESS):
+def CalculateRadialThicknessHV(LVFoilHeight, LVNumberOfTurns, HVWireThickness, HVWireLength, NumberOfDucts=0, ThicknessOfDucts=COOLING_DUCT_THICKNESS, circular=False):
     HVNumberOfTurns = LVNumberOfTurns * (HVRATE / LVRATE)
     HVLayerHeight = LVFoilHeight - 50
-    HVTurnsPerLayer = (HVLayerHeight / (HVWireLength + INSULATION_THICKNESS_WIRE)) - 1
+    # For circular wire, axial space per turn = diameter (thickness)
+    wire_axial_size = HVWireThickness if circular else HVWireLength
+    HVTurnsPerLayer = (HVLayerHeight / (wire_axial_size + INSULATION_THICKNESS_WIRE)) - 1
+    if HVTurnsPerLayer <= 0:
+        return 1e18
     HVLayerNumber = math.ceil(HVNumberOfTurns / HVTurnsPerLayer)
     return HVLayerNumber * HVWireThickness + (HVLayerNumber - 1) * HVInsulationThickness + \
            (NumberOfDucts * (ThicknessOfDucts + 0.5))
 
 
 @njit(fastmath=True)
-def CalculateAverageDiameterHV(LVNumberOfTurns, LVFoilThiccnes, CoreDiameter, LVFoilHeight, HVWireThickness, HVWireLength, CoreLength, NumberOfDucts):
-    return CoreDiameter + 2 * DistanceCoreLV + 2 * CalculateRadialThicknessLV(LVNumberOfTurns, LVFoilThiccnes, NumberOfDucts) + \
-           2 * MainGap + CalculateRadialThiccnessHV(LVFoilHeight, LVNumberOfTurns, HVWireThickness, HVWireLength, NumberOfDucts) + \
+def CalculateAverageDiameterHV(LVNumberOfTurns, LVFoilThickness, CoreDiameter, LVFoilHeight, HVWireThickness, HVWireLength, CoreLength, NumberOfDucts, circular=False):
+    return CoreDiameter + 2 * DistanceCoreLV + 2 * CalculateRadialThicknessLV(LVNumberOfTurns, LVFoilThickness, NumberOfDucts) + \
+           2 * MainGap + CalculateRadialThicknessHV(LVFoilHeight, LVNumberOfTurns, HVWireThickness, HVWireLength, NumberOfDucts, circular=circular) + \
            (2 * CoreLength / math.pi)
 
 
 @njit(fastmath=True)
-def CalculateTotalLengthCoilHV(LVNumberOfTurns, LVFoilThiccnes, CoreDiameter, LVFoilHeight, HVWireThickness, HVWireLength, CoreLength, NumberOfDucts):
+def CalculateTotalLengthCoilHV(LVNumberOfTurns, LVFoilThickness, CoreDiameter, LVFoilHeight, HVWireThickness, HVWireLength, CoreLength, NumberOfDucts, circular=False):
     HVNumberOfTurns = LVNumberOfTurns * HVRATE / LVRATE
-    return CalculateAverageDiameterHV(LVNumberOfTurns, LVFoilThiccnes, CoreDiameter, LVFoilHeight, HVWireThickness, HVWireLength, CoreLength, NumberOfDucts) * \
+    return CalculateAverageDiameterHV(LVNumberOfTurns, LVFoilThickness, CoreDiameter, LVFoilHeight, HVWireThickness, HVWireLength, CoreLength, NumberOfDucts, circular) * \
            math.pi * HVNumberOfTurns
 
 
 @njit(fastmath=True)
-def CalculateCoreWeight(LVNumberOfTurns, LVFoilHeight, LVFoilThiccnes, HVWireThickness, HVWireLength, CoreDiameter, CoreLength, NumberOfDuctsLv, NumberOfDuctsHv):
+def CalculateCoreWeight(LVNumberOfTurns, LVFoilHeight, LVFoilThickness, HVWireThickness, HVWireLength, CoreDiameter, CoreLength, NumberOfDuctsLv, NumberOfDuctsHv, circular=False):
     FoilHeight = LVFoilHeight
     WindowHeight = FoilHeight + 40
-    RadialThickness = CalculateRadialThicknessLV(LVNumberOfTurns, LVFoilThiccnes, NumberOfDuctsLv) + \
-                      CalculateRadialThiccnessHV(LVFoilHeight, LVNumberOfTurns, HVWireThickness, HVWireLength, NumberOfDuctsHv) + \
+    RadialThickness = CalculateRadialThicknessLV(LVNumberOfTurns, LVFoilThickness, NumberOfDuctsLv) + \
+                      CalculateRadialThicknessHV(LVFoilHeight, LVNumberOfTurns, HVWireThickness, HVWireLength, NumberOfDuctsHv, circular=circular) + \
                       MainGap + DistanceCoreLV
     CenterBetweenLegs = (CoreDiameter + RadialThickness * 2) + PhaseGap
     rectWeight = (((3 * WindowHeight) + 2 * (2 * CenterBetweenLegs + CoreDiameter)) * (CoreDiameter * CoreLength / 100) * CoreDensity * CoreFillingFactorRectangular) / 1e6
@@ -272,25 +289,39 @@ def CalculateCoreWeight(LVNumberOfTurns, LVFoilHeight, LVFoilThiccnes, HVWireThi
 
 
 @njit(fastmath=True)
-def CalculateVolumeLV(LVNumberOfTurns, LVFoilThiccnes, CoreDiameter, LVFoilHeight, CoreLength, NumberOfDucts):
-    length = CalculateTotalLengthCoilLV(LVNumberOfTurns, LVFoilThiccnes, CoreDiameter, CoreLength, NumberOfDucts)
-    return (length * LVFoilHeight * LVFoilThiccnes) / 1000000
+def CalculateVolumeLV(LVNumberOfTurns, LVFoilThickness, CoreDiameter, LVFoilHeight, CoreLength, NumberOfDucts):
+    length = CalculateTotalLengthCoilLV(LVNumberOfTurns, LVFoilThickness, CoreDiameter, CoreLength, NumberOfDucts)
+    return (length * LVFoilHeight * LVFoilThickness) / 1000000
 
 
 @njit(fastmath=True)
-def CalculateSectionHV(Thickness, Length):
-    return (Thickness * Length) - (Thickness**2) + (((Thickness / 2)**2) * math.pi)
+def CalculateSectionHV(Thickness, Length, circular=False):
+    """Calculate HV wire cross-section area.
+
+    Args:
+        Thickness: Wire thickness (diameter for circular)
+        Length: Wire length (ignored for circular)
+        circular: If True, calculate circular wire section (pi * r^2)
+                  If False, calculate rectangular with rounded corners (default)
+    """
+    if circular:
+        # Circular wire: area = pi * (diameter/2)^2
+        radius = Thickness / 2.0
+        return math.pi * radius * radius
+    else:
+        # Rectangular wire with rounded corners
+        return (Thickness * Length) - (Thickness**2) + (((Thickness / 2)**2) * math.pi)
 
 
 @njit(fastmath=True)
-def CalculateSectionLV(HeightLV, ThiccnessLV):
-    return HeightLV * ThiccnessLV
+def CalculateSectionLV(HeightLV, ThicknessLV):
+    return HeightLV * ThicknessLV
 
 
 @njit(fastmath=True)
-def CalculateVolumeHV(LVNumberOfTurns, LVFoilThiccnes, CoreDiameter, LVFoilHeight, HVWireThickness, HVWireLength, CoreLength, NumberOfDucts):
-    length = CalculateTotalLengthCoilHV(LVNumberOfTurns, LVFoilThiccnes, CoreDiameter, LVFoilHeight, HVWireThickness, HVWireLength, CoreLength, NumberOfDucts)
-    return (length * CalculateSectionHV(HVWireThickness, HVWireLength)) / 1000000
+def CalculateVolumeHV(LVNumberOfTurns, LVFoilThickness, CoreDiameter, LVFoilHeight, HVWireThickness, HVWireLength, CoreLength, NumberOfDucts, circular=False):
+    length = CalculateTotalLengthCoilHV(LVNumberOfTurns, LVFoilThickness, CoreDiameter, LVFoilHeight, HVWireThickness, HVWireLength, CoreLength, NumberOfDucts, circular)
+    return (length * CalculateSectionHV(HVWireThickness, HVWireLength, circular)) / 1000000
 
 
 @njit(fastmath=True)
@@ -305,16 +336,22 @@ def CalculatePriceOfWeight(Weight, MaterialPrice):
 
 @njit(fastmath=True)
 def CalculateResistanceLV(MaterialResistivity, Length, Section):
+    if Section <= 0:
+        return 1e18
     return (Length / 1000) * MaterialResistivity / Section
 
 
 @njit(fastmath=True)
 def CalculateResistanceHV(MaterialResistivity, Length, Section):
+    if Section <= 0:
+        return 1e18
     return (Length / 1000) * MaterialResistivity / Section
 
 
 @njit(fastmath=True)
 def CalculateCurrent(Power, Voltage):
+    if Voltage <= 0:
+        return 1e18
     return (Power * 1000) / (Voltage * 3)
 
 
@@ -329,11 +366,11 @@ def CalculateCurrentHV(Power, VoltageHV):
 
 
 @njit(fastmath=True)
-def CalculateLoadLosses(LVNumberOfTurns, LVFoilThiccnes, CoreDiameter, LVFoilHeight, HVWireThickness, HVWireLength, MaterialResistivity, Power, HVRating, LVRating, CoreLength, NumberOfDuctsLv, NumberOfDuctsHv):
-    lvLength = CalculateTotalLengthCoilLV(LVNumberOfTurns, LVFoilThiccnes, CoreDiameter, CoreLength, NumberOfDuctsLv)
-    hvLength = CalculateTotalLengthCoilHV(LVNumberOfTurns, LVFoilThiccnes, CoreDiameter, LVFoilHeight, HVWireThickness, HVWireLength, CoreLength, NumberOfDuctsHv)
-    lvSection = CalculateSectionLV(LVFoilHeight, LVFoilThiccnes)
-    hvSection = CalculateSectionHV(HVWireThickness, HVWireLength)
+def CalculateLoadLosses(LVNumberOfTurns, LVFoilThickness, CoreDiameter, LVFoilHeight, HVWireThickness, HVWireLength, MaterialResistivity, Power, HVRating, LVRating, CoreLength, NumberOfDuctsLv, NumberOfDuctsHv, circular=False):
+    lvLength = CalculateTotalLengthCoilLV(LVNumberOfTurns, LVFoilThickness, CoreDiameter, CoreLength, NumberOfDuctsLv)
+    hvLength = CalculateTotalLengthCoilHV(LVNumberOfTurns, LVFoilThickness, CoreDiameter, LVFoilHeight, HVWireThickness, HVWireLength, CoreLength, NumberOfDuctsHv, circular)
+    lvSection = CalculateSectionLV(LVFoilHeight, LVFoilThickness)
+    hvSection = CalculateSectionHV(HVWireThickness, HVWireLength, circular)
     lvResistance = CalculateResistanceLV(MaterialResistivity, lvLength, lvSection)
     hvResistance = CalculateResistanceHV(MaterialResistivity, hvLength, hvSection)
     hvCurrent = CalculateCurrentHV(Power, HVRating)
@@ -344,38 +381,52 @@ def CalculateLoadLosses(LVNumberOfTurns, LVFoilThiccnes, CoreDiameter, LVFoilHei
 
 
 @njit(fastmath=True)
-def CalculateNoLoadLosses(LVNumberOfTurns, LVFoilHeight, LVFoilThiccnes, HVWireThickness, HVWireLength, CoreDiameter, LVRate, CoreLength, NumberOfDuctsLv, NumberOfDuctsHv):
-    CoreWeight = CalculateCoreWeight(LVNumberOfTurns, LVFoilHeight, LVFoilThiccnes, HVWireThickness, HVWireLength, CoreDiameter, CoreLength, NumberOfDuctsLv, NumberOfDuctsHv)
+def CalculateNoLoadLosses(LVNumberOfTurns, LVFoilHeight, LVFoilThickness, HVWireThickness, HVWireLength, CoreDiameter, LVRate, CoreLength, NumberOfDuctsLv, NumberOfDuctsHv, circular=False):
+    CoreWeight = CalculateCoreWeight(LVNumberOfTurns, LVFoilHeight, LVFoilThickness, HVWireThickness, HVWireLength, CoreDiameter, CoreLength, NumberOfDuctsLv, NumberOfDuctsHv, circular)
     Induction = CalculateInduction(CalculateVoltsPerTurns(LVRate, LVNumberOfTurns), CoreDiameter, CoreLength)
     WattsPerKG = CalculateWattsPerKG(Induction)
     return WattsPerKG * CoreWeight * 1.2
 
 
 @njit(fastmath=True)
-def CalculateStrayDiameter(LVNumberOfTurns, LVFoilThiccness, LVFoilHeight, HVWireThickness, HVWireLength, DiameterOfCore, CoreLength, NumberOfDuctsLV, NumberOfDuctsHV):
-    MainGapDiameter = DiameterOfCore + DistanceCoreLV * 2 + CalculateRadialThicknessLV(LVNumberOfTurns, LVFoilThiccness, NumberOfDuctsLV) * 2 + \
+def CalculateStrayDiameter(LVNumberOfTurns, LVFoilThickness, LVFoilHeight, HVWireThickness, HVWireLength, DiameterOfCore, CoreLength, NumberOfDuctsLV, NumberOfDuctsHV, circular=False):
+    MainGapDiameter = DiameterOfCore + DistanceCoreLV * 2 + CalculateRadialThicknessLV(LVNumberOfTurns, LVFoilThickness, NumberOfDuctsLV) * 2 + \
                       (2 * CoreLength / math.pi) + MainGap
-    HVRadialThickness = CalculateRadialThiccnessHV(LVFoilHeight, LVNumberOfTurns, HVWireThickness, HVWireLength, NumberOfDuctsHV)
+    HVRadialThickness = CalculateRadialThicknessHV(LVFoilHeight, LVNumberOfTurns, HVWireThickness, HVWireLength, NumberOfDuctsHV, circular=circular)
     ReducedWidthHV = HVRadialThickness / 3
-    LVRadialThickness = CalculateRadialThicknessLV(LVNumberOfTurns, LVFoilThiccness, NumberOfDuctsLV)
+    LVRadialThickness = CalculateRadialThicknessLV(LVNumberOfTurns, LVFoilThickness, NumberOfDuctsLV)
     ReducedWidthLV = LVRadialThickness / 3
-    SD = MainGapDiameter + ReducedWidthHV - ReducedWidthLV + ((ReducedWidthHV**2 - ReducedWidthLV**2) / (ReducedWidthLV + ReducedWidthHV + MainGap))
+    denom = ReducedWidthLV + ReducedWidthHV + MainGap
+    if denom <= 0:
+        denom = 0.001  # Safety
+    SD = MainGapDiameter + ReducedWidthHV - ReducedWidthLV + ((ReducedWidthHV**2 - ReducedWidthLV**2) / denom)
     return SD
 
 
 @njit(fastmath=True)
 def CalculateUr(LoadLosses, Power):
+    if Power <= 0:
+        return 1e18
     return LoadLosses / (10 * Power)
 
 
 @njit(fastmath=True)
-def CalculateUx(Power, StrayDiameter, LVNumberOfTurns, LVFoilThiccness, LVFoilHeight, HVWireThickness, HVWireLength, Frequency, LVRate, NumberOfDuctsLV, NumberOfDuctsHV):
-    HVRadialThickness = CalculateRadialThiccnessHV(LVFoilHeight, LVNumberOfTurns, HVWireThickness, HVWireLength, NumberOfDuctsHV)
+def CalculateUx(Power, StrayDiameter, LVNumberOfTurns, LVFoilThickness, LVFoilHeight, HVWireThickness, HVWireLength, Frequency, LVRate, NumberOfDuctsLV, NumberOfDuctsHV, circular=False):
+    if LVFoilHeight <= 0:
+        return 1e18
+    HVRadialThickness = CalculateRadialThicknessHV(LVFoilHeight, LVNumberOfTurns, HVWireThickness, HVWireLength, NumberOfDuctsHV, circular=circular)
+    if HVRadialThickness >= 1e17:
+        return 1e18
     ReducedWidthHV = HVRadialThickness / 3
-    LVRadialThickness = CalculateRadialThicknessLV(LVNumberOfTurns, LVFoilThiccness, NumberOfDuctsLV)
+    LVRadialThickness = CalculateRadialThicknessLV(LVNumberOfTurns, LVFoilThickness, NumberOfDuctsLV)
     ReducedWidthLV = LVRadialThickness / 3
-    return (Power * StrayDiameter * Frequency * (ReducedWidthLV + ReducedWidthHV + MainGap)) / \
-           (1210 * (CalculateVoltsPerTurns(LVRate, LVNumberOfTurns)**2) * LVFoilHeight)
+    volts_per_turn = CalculateVoltsPerTurns(LVRate, LVNumberOfTurns)
+    if volts_per_turn >= 1e17:
+        return 1e18
+    denom = 1210 * (volts_per_turn**2) * LVFoilHeight
+    if denom <= 0:
+        return 1e18
+    return (Power * StrayDiameter * Frequency * (ReducedWidthLV + ReducedWidthHV + MainGap)) / denom
 
 
 @njit(fastmath=True)
@@ -384,13 +435,13 @@ def CalculateImpedance(Ux, Ur):
 
 
 @njit(fastmath=True)
-def CalculatePrice(LVNumberOfTurns, LVFoilHeight, LVFoilThiccnes, HVWireThickness, HVWireLength, CoreDiameter, CoreLength, NumberOfDuctsLV, NumberOfDuctsHV, printValues=False):
-    wc = CalculateCoreWeight(LVNumberOfTurns, LVFoilHeight, LVFoilThiccnes, HVWireThickness, HVWireLength, CoreDiameter, CoreLength, NumberOfDuctsLV, NumberOfDuctsHV)
+def CalculatePrice(LVNumberOfTurns, LVFoilHeight, LVFoilThickness, HVWireThickness, HVWireLength, CoreDiameter, CoreLength, NumberOfDuctsLV, NumberOfDuctsHV, printValues=False, circular=False):
+    wc = CalculateCoreWeight(LVNumberOfTurns, LVFoilHeight, LVFoilThickness, HVWireThickness, HVWireLength, CoreDiameter, CoreLength, NumberOfDuctsLV, NumberOfDuctsHV, circular)
     pc = CalculatePriceOfWeight(wc, materialCore_Price)
-    volumeHV = CalculateVolumeHV(LVNumberOfTurns, LVFoilThiccnes, CoreDiameter, LVFoilHeight, HVWireThickness, HVWireLength, CoreLength, NumberOfDuctsHV) * 3
+    volumeHV = CalculateVolumeHV(LVNumberOfTurns, LVFoilThickness, CoreDiameter, LVFoilHeight, HVWireThickness, HVWireLength, CoreLength, NumberOfDuctsHV, circular) * 3
     whv = CalculateWeightOfVolume(volumeHV, materialToBeUsedWire_Density)
     phv = CalculatePriceOfWeight(whv, materialToBeUsedWire_Price)
-    volumeLV = CalculateVolumeLV(LVNumberOfTurns, LVFoilThiccnes, CoreDiameter, LVFoilHeight, CoreLength, NumberOfDuctsLV) * 3
+    volumeLV = CalculateVolumeLV(LVNumberOfTurns, LVFoilThickness, CoreDiameter, LVFoilHeight, CoreLength, NumberOfDuctsLV) * 3
     wlv = CalculateWeightOfVolume(volumeLV, materialToBeUsedFoil_Density)
     plv = CalculatePriceOfWeight(wlv, materialToBeUsedFoil_Price)
     if printValues:
@@ -406,11 +457,15 @@ def CalculatePrice(LVNumberOfTurns, LVFoilHeight, LVFoilThiccnes, HVWireThicknes
 
 @njit(fastmath=True)
 def CalculateEfficencyOfCoolingDuct(FoilHeight, CoolingDuctThickness=COOLING_DUCT_THICKNESS):
+    if FoilHeight <= 0:
+        return 1e18
     return min((CoolingDuctThickness / (0.949 * (FoilHeight**0.25))), 1)
 
 
 @njit(fastmath=True)
 def CalculateEfficencyOfMainGap(FoilHeight, DistanceBetweenCoils=MainGap):
+    if FoilHeight <= 0:
+        return 1e18
     return min(((DistanceBetweenCoils - 0.5) / (0.949 * (FoilHeight**0.25))), 1)
 
 
@@ -425,70 +480,119 @@ def CalculateTotalInsulationThicknessHV(NumLayerHV, insulationThicknessHV=HVInsu
 
 
 @njit(fastmath=True)
-def CalculateHeatFluxLV(LoadLossesLV, FoilHeight, LVNumberOfTurns, LVFoilThiccnes, CoreDiameter, CoreLength=0):
-    AverageLengthLV = CalculateTotalLengthCoilLV(LVNumberOfTurns, LVFoilThiccnes, CoreDiameter, CoreLength, 0) / LVNumberOfTurns
+def CalculateHeatFluxLV(LoadLossesLV, FoilHeight, LVNumberOfTurns, LVFoilThickness, CoreDiameter, CoreLength=0):
+    if LVNumberOfTurns <= 0 or FoilHeight <= 0:
+        return 1e18
+    AverageLengthLV = CalculateTotalLengthCoilLV(LVNumberOfTurns, LVFoilThickness, CoreDiameter, CoreLength, 0) / LVNumberOfTurns
+    if AverageLengthLV <= 0:
+        return 1e18
     val = (((LoadLossesLV / 3) * 1.03) / (AverageLengthLV * FoilHeight))
     return val * 10**4
 
 
 @njit(fastmath=True)
-def CalculateHeatFluxHV(LoadLossesHV, HVHeight, FoilHeight, LVNumberOfTurns, LVFoilThiccnes, CoreDiameter, HVWireThickness, HVWireLength, CoreLength=0):
-    AverageLengthHV = CalculateAverageDiameterHV(LVNumberOfTurns, LVFoilThiccnes, CoreDiameter, FoilHeight, HVWireThickness, HVWireLength, CoreLength, 0) * math.pi
+def CalculateHeatFluxHV(LoadLossesHV, HVHeight, FoilHeight, LVNumberOfTurns, LVFoilThickness, CoreDiameter, HVWireThickness, HVWireLength, CoreLength=0, circular=False):
+    if HVHeight <= 0:
+        return 1e18
+    AverageLengthHV = CalculateAverageDiameterHV(LVNumberOfTurns, LVFoilThickness, CoreDiameter, FoilHeight, HVWireThickness, HVWireLength, CoreLength, 0, circular) * math.pi
+    if AverageLengthHV <= 0:
+        return 1e18
     val = (((LoadLossesHV / 3) * 1.03) / (AverageLengthHV * HVHeight))
     return val * 10**4
 
 
 @njit(fastmath=True)
 def AidingFormulaHVOpenDucts(HeatFluxHV, MainGapEfficiency, EfficiencyDuct, NumberDucts, DistanceBetWeenCoreLV=DistanceCoreLV, CCDucts=COOLING_DUCT_CENTER_TO_CENTER_DISTANCE, WidthDuct=COOLING_DUCT_WIDTH):
-    return HeatFluxHV / (2 * (0.5 + (((CCDucts - WidthDuct) / CCDucts) * ((0.5 * MainGapEfficiency) + (NumberDucts * EfficiencyDuct)))))
+    if CCDucts <= 0:
+        return 1e18
+    denom = 2 * (0.5 + (((CCDucts - WidthDuct) / CCDucts) * ((0.5 * MainGapEfficiency) + (NumberDucts * EfficiencyDuct))))
+    if denom <= 0:
+        return 1e18
+    return HeatFluxHV / denom
 
 
 @njit(fastmath=True)
 def AidingFormulaHVCloseDucts(HeatFluxHV, MainGapEfficiency, EfficiencyDuct, NumberDucts, DistanceBetWeenCoreLV=DistanceCoreLV, CCDucts=COOLING_DUCT_CENTER_TO_CENTER_DISTANCE, WidthDuct=COOLING_DUCT_WIDTH):
-    return HeatFluxHV / (2 * (0.5 + (((CCDucts - WidthDuct) / CCDucts) * ((0.5 * MainGapEfficiency) + ((NumberDucts - 1) * EfficiencyDuct)))))
+    if CCDucts <= 0:
+        return 1e18
+    denom = 2 * (0.5 + (((CCDucts - WidthDuct) / CCDucts) * ((0.5 * MainGapEfficiency) + ((NumberDucts - 1) * EfficiencyDuct))))
+    if denom <= 0:
+        return 1e18
+    return HeatFluxHV / denom
 
 
 @njit(fastmath=True)
 def AidingFormulaLVOpenDucts(HeatFluxLV, MainGapEfficiency, EfficiencyDuct, NumberDucts, DistanceBetWeenCoreLV=DistanceCoreLV, CCDucts=COOLING_DUCT_CENTER_TO_CENTER_DISTANCE, WidthDuct=COOLING_DUCT_WIDTH):
+    if CCDucts <= 0:
+        return 1e18
     coefCLV = 0.5 if DistanceCoreLV > 3 else 0.318
-    return HeatFluxLV / (2 * (coefCLV + (((CCDucts - WidthDuct) / CCDucts) * ((0.5 * MainGapEfficiency) + (NumberDucts * EfficiencyDuct)))))
+    denom = 2 * (coefCLV + (((CCDucts - WidthDuct) / CCDucts) * ((0.5 * MainGapEfficiency) + (NumberDucts * EfficiencyDuct))))
+    if denom <= 0:
+        return 1e18
+    return HeatFluxLV / denom
 
 
 @njit(fastmath=True)
 def AidingFormulaLVCloseDuct(HeatFluxLV, MainGapEfficiency, EfficiencyDuct, NumberDucts, DistanceBetWeenCoreLV=DistanceCoreLV, CCDucts=COOLING_DUCT_CENTER_TO_CENTER_DISTANCE, WidthDuct=COOLING_DUCT_WIDTH):
+    if CCDucts <= 0:
+        return 1e18
     coefCLV = 0.5 if DistanceCoreLV > 3 else 0.318
-    return HeatFluxLV / (2 * (coefCLV + (((CCDucts - WidthDuct) / CCDucts) * ((0.5 * MainGapEfficiency) + ((NumberDucts - 1) * EfficiencyDuct)))))
+    denom = 2 * (coefCLV + (((CCDucts - WidthDuct) / CCDucts) * ((0.5 * MainGapEfficiency) + ((NumberDucts - 1) * EfficiencyDuct))))
+    if denom <= 0:
+        return 1e18
+    return HeatFluxLV / denom
 
 
 @njit(fastmath=True)
 def CalculateGradientHeatLV(TotalTurnsLV, HeatFluxLV, MainGapEfficiency, EfficiencyDuct, NumberDucts):
     openDuctVal = AidingFormulaLVOpenDucts(HeatFluxLV, MainGapEfficiency, EfficiencyDuct, NumberDucts)
+    if openDuctVal >= 1e17:
+        return 1e18
     closedDuctVal = openDuctVal if NumberDucts == 0 else AidingFormulaLVCloseDuct(HeatFluxLV, MainGapEfficiency, EfficiencyDuct, NumberDucts)
-    val0_1 = (1.754 * openDuctVal**0.8 + (openDuctVal * CalculateTotalInsulationThicknessLV(TotalTurnsLV)) / (6 * 1.16 * (1 + NumberDucts)))
-    val0_2 = 0.3 * (1.754 * closedDuctVal**0.8 + (closedDuctVal * CalculateTotalInsulationThicknessLV(TotalTurnsLV)) / (6 * 1.16 * (1 + NumberDucts)))
+    if closedDuctVal >= 1e17:
+        return 1e18
+    denom = 6 * 1.16 * (1 + NumberDucts)
+    if denom <= 0:
+        return 1e18
+    val0_1 = (1.754 * openDuctVal**0.8 + (openDuctVal * CalculateTotalInsulationThicknessLV(TotalTurnsLV)) / denom)
+    val0_2 = 0.3 * (1.754 * closedDuctVal**0.8 + (closedDuctVal * CalculateTotalInsulationThicknessLV(TotalTurnsLV)) / denom)
     return (val0_1 + val0_2) * oilToBeUsed_Factor * (50 / 47)
 
 
 @njit(fastmath=True)
 def CalculateGradientHeatHV(TotalTurnsHV, HeatFluxHV, MainGapEfficiency, EfficiencyDuct, NumberDucts):
     openDuctVal = AidingFormulaHVOpenDucts(HeatFluxHV, MainGapEfficiency, EfficiencyDuct, NumberDucts)
+    if openDuctVal >= 1e17:
+        return 1e18
     closedDuctVal = openDuctVal if NumberDucts == 0 else AidingFormulaHVCloseDucts(HeatFluxHV, MainGapEfficiency, EfficiencyDuct, NumberDucts)
-    val0_1 = (0.75 * (1.754 * openDuctVal**0.8 + (openDuctVal * CalculateTotalInsulationThicknessHV(TotalTurnsHV)) / (6 * 1.5 * (1 + NumberDucts))))
-    val0_2 = (0.30 * (1.754 * closedDuctVal**0.8 + (closedDuctVal * CalculateTotalInsulationThicknessHV(TotalTurnsHV)) / (6 * 1.5 * (1 + NumberDucts))))
+    if closedDuctVal >= 1e17:
+        return 1e18
+    denom = 6 * 1.5 * (1 + NumberDucts)
+    if denom <= 0:
+        return 1e18
+    val0_1 = (0.75 * (1.754 * openDuctVal**0.8 + (openDuctVal * CalculateTotalInsulationThicknessHV(TotalTurnsHV)) / denom))
+    val0_2 = (0.30 * (1.754 * closedDuctVal**0.8 + (closedDuctVal * CalculateTotalInsulationThicknessHV(TotalTurnsHV)) / denom))
     return (val0_1 + val0_2) * oilToBeUsed_Factor
 
 
 @njit(fastmath=True)
-def CalculateNumberOfCoolingDucts(LVNumberOfTurns, LVFoilHeight, LVFoilThiccnes, HVWireThickness, HVWireLength, CoreDiameter, CoreLength, LVRATE=LVRATE, HVRATE=HVRATE, POWER=POWERRATING, FREQ=FREQUENCY, MaterialResistivity=materialToBeUsedWire_Resistivity, GUARANTEEDNLL=GUARANTEED_NO_LOAD_LOSS, GUARANTEEDLL=GUARANTEED_LOAD_LOSS, GUARANTEEDUCC=GUARANTEED_UCC, tolerance=1, isFinal=False):
-    Ll, LlLv, LlHv = CalculateLoadLosses(LVNumberOfTurns, LVFoilThiccnes, CoreDiameter, LVFoilHeight, HVWireThickness, HVWireLength, MaterialResistivity, POWER, HVRATE, LVRATE, CoreLength, 0, 0)
-    heatFluxLV = CalculateHeatFluxLV(LlLv, LVFoilHeight, LVNumberOfTurns, LVFoilThiccnes, CoreDiameter, CoreLength)
+def CalculateNumberOfCoolingDucts(LVNumberOfTurns, LVFoilHeight, LVFoilThickness, HVWireThickness, HVWireLength, CoreDiameter, CoreLength, LVRATE=LVRATE, HVRATE=HVRATE, POWER=POWERRATING, FREQ=FREQUENCY, MaterialResistivity=materialToBeUsedWire_Resistivity, GUARANTEEDNLL=GUARANTEED_NO_LOAD_LOSS, GUARANTEEDLL=GUARANTEED_LOAD_LOSS, GUARANTEEDUCC=GUARANTEED_UCC, tolerance=1, isFinal=False, circular=False):
+    Ll, LlLv, LlHv = CalculateLoadLosses(LVNumberOfTurns, LVFoilThickness, CoreDiameter, LVFoilHeight, HVWireThickness, HVWireLength, MaterialResistivity, POWER, HVRATE, LVRATE, CoreLength, 0, 0, circular)
+    heatFluxLV = CalculateHeatFluxLV(LlLv, LVFoilHeight, LVNumberOfTurns, LVFoilThickness, CoreDiameter, CoreLength)
     MainGapEff = CalculateEfficencyOfMainGap(LVFoilHeight)
     DuctEff = CalculateEfficencyOfCoolingDuct(LVFoilHeight)
     gradientLV = CalculateGradientHeatLV(LVNumberOfTurns, heatFluxLV, MainGapEff, DuctEff, 0)
-    heatFluxHV = CalculateHeatFluxHV(LlHv, LVFoilHeight - 50, LVFoilHeight, LVNumberOfTurns, LVFoilThiccnes, CoreDiameter, HVWireThickness, HVWireLength, CoreLength)
+    heatFluxHV = CalculateHeatFluxHV(LlHv, LVFoilHeight - 50, LVFoilHeight, LVNumberOfTurns, LVFoilThickness, CoreDiameter, HVWireThickness, HVWireLength, CoreLength, circular)
     HVNumberOfTurns = LVNumberOfTurns * HVRATE / LVRATE
     HVLayerHeight = LVFoilHeight - 50
-    HVTurnsPerLayer = (HVLayerHeight / (HVWireLength + INSULATION_THICKNESS_WIRE)) - 1
+    # For circular wire, axial space per turn = diameter (thickness)
+    wire_axial_size = HVWireThickness if circular else HVWireLength
+    wire_denom = wire_axial_size + INSULATION_THICKNESS_WIRE
+    if wire_denom <= 0:
+        return 0, 0
+    HVTurnsPerLayer = (HVLayerHeight / wire_denom) - 1
+    if HVTurnsPerLayer <= 0:
+        return 0, 0
     HVLayerNumber = math.ceil(HVNumberOfTurns / HVTurnsPerLayer)
     gradientHV = CalculateGradientHeatHV(HVLayerNumber, heatFluxLV, MainGapEff, DuctEff, 0)
     numberOfDuctsLV = 0
@@ -504,17 +608,24 @@ def CalculateNumberOfCoolingDucts(LVNumberOfTurns, LVFoilHeight, LVFoilThiccnes,
 
 
 @njit(fastmath=True)
-def CalculateNumberOfCoolingDucts_WithLosses(LVNumberOfTurns, LVFoilHeight, LVFoilThiccnes, HVWireThickness, HVWireLength, CoreDiameter, CoreLength, MaterialResistivity, POWER, HVRATE_VAL, LVRATE_VAL, isFinal=False):
+def CalculateNumberOfCoolingDucts_WithLosses(LVNumberOfTurns, LVFoilHeight, LVFoilThickness, HVWireThickness, HVWireLength, CoreDiameter, CoreLength, MaterialResistivity, POWER, HVRATE_VAL, LVRATE_VAL, isFinal=False, circular=False):
     """Returns (numberOfDuctsLV, numberOfDuctsHV, Ll_zero, LlLv_zero, LlHv_zero)"""
-    Ll, LlLv, LlHv = CalculateLoadLosses(LVNumberOfTurns, LVFoilThiccnes, CoreDiameter, LVFoilHeight, HVWireThickness, HVWireLength, MaterialResistivity, POWER, HVRATE_VAL, LVRATE_VAL, CoreLength, 0, 0)
-    heatFluxLV = CalculateHeatFluxLV(LlLv, LVFoilHeight, LVNumberOfTurns, LVFoilThiccnes, CoreDiameter, CoreLength)
+    Ll, LlLv, LlHv = CalculateLoadLosses(LVNumberOfTurns, LVFoilThickness, CoreDiameter, LVFoilHeight, HVWireThickness, HVWireLength, MaterialResistivity, POWER, HVRATE_VAL, LVRATE_VAL, CoreLength, 0, 0, circular)
+    heatFluxLV = CalculateHeatFluxLV(LlLv, LVFoilHeight, LVNumberOfTurns, LVFoilThickness, CoreDiameter, CoreLength)
     MainGapEff = CalculateEfficencyOfMainGap(LVFoilHeight)
     DuctEff = CalculateEfficencyOfCoolingDuct(LVFoilHeight)
     gradientLV = CalculateGradientHeatLV(LVNumberOfTurns, heatFluxLV, MainGapEff, DuctEff, 0)
-    heatFluxHV = CalculateHeatFluxHV(LlHv, LVFoilHeight - 50, LVFoilHeight, LVNumberOfTurns, LVFoilThiccnes, CoreDiameter, HVWireThickness, HVWireLength, CoreLength)
+    heatFluxHV = CalculateHeatFluxHV(LlHv, LVFoilHeight - 50, LVFoilHeight, LVNumberOfTurns, LVFoilThickness, CoreDiameter, HVWireThickness, HVWireLength, CoreLength, circular)
     HVNumberOfTurns = LVNumberOfTurns * HVRATE_VAL / LVRATE_VAL
     HVLayerHeight = LVFoilHeight - 50
-    HVTurnsPerLayer = (HVLayerHeight / (HVWireLength + INSULATION_THICKNESS_WIRE)) - 1
+    # For circular wire, axial space per turn = diameter (thickness)
+    wire_axial_size = HVWireThickness if circular else HVWireLength
+    wire_denom = wire_axial_size + INSULATION_THICKNESS_WIRE
+    if wire_denom <= 0:
+        return 0, 0, Ll, LlLv, LlHv
+    HVTurnsPerLayer = (HVLayerHeight / wire_denom) - 1
+    if HVTurnsPerLayer <= 0:
+        return 0, 0, Ll, LlLv, LlHv
     HVLayerNumber = math.ceil(HVNumberOfTurns / HVTurnsPerLayer)
     gradientHV = CalculateGradientHeatHV(HVLayerNumber, heatFluxHV, MainGapEff, DuctEff, 0)
     numberOfDuctsLV = 0.0
@@ -534,18 +645,18 @@ def CalculateNumberOfCoolingDucts_WithLosses(LVNumberOfTurns, LVFoilHeight, LVFo
 # =============================================================================
 
 @njit(fastmath=True)
-def CalculateFinalizedPrice(LVNumberOfTurns, LVFoilHeight, LVFoilThiccnes, HVWireThickness, HVWireLength, CoreDiameter, CoreLength=0, LVRATE=LVRATE, HVRATE=HVRATE, POWER=POWERRATING, FREQ=FREQUENCY, MaterialResistivity=materialToBeUsedWire_Resistivity, GUARANTEEDNLL=GUARANTEED_NO_LOAD_LOSS, GUARANTEEDLL=GUARANTEED_LOAD_LOSS, GUARANTEEDUCC=GUARANTEED_UCC, isFinal=False, PutCoolingDucts=True):
+def CalculateFinalizedPrice(LVNumberOfTurns, LVFoilHeight, LVFoilThickness, HVWireThickness, HVWireLength, CoreDiameter, CoreLength=0, LVRATE=LVRATE, HVRATE=HVRATE, POWER=POWERRATING, FREQ=FREQUENCY, MaterialResistivity=materialToBeUsedWire_Resistivity, GUARANTEEDNLL=GUARANTEED_NO_LOAD_LOSS, GUARANTEEDLL=GUARANTEED_LOAD_LOSS, GUARANTEEDUCC=GUARANTEED_UCC, isFinal=False, PutCoolingDucts=True, circular=False):
     LvCD = 0
     HvCD = 0
     if PutCoolingDucts:
-        LvCD, HvCD = CalculateNumberOfCoolingDucts(LVNumberOfTurns, LVFoilHeight, LVFoilThiccnes, HVWireThickness, HVWireLength, CoreDiameter, CoreLength, LVRATE=LVRATE, HVRATE=HVRATE, POWER=POWERRATING, FREQ=FREQUENCY, MaterialResistivity=materialToBeUsedWire_Resistivity, GUARANTEEDNLL=GUARANTEED_NO_LOAD_LOSS, GUARANTEEDLL=GUARANTEED_LOAD_LOSS, GUARANTEEDUCC=GUARANTEED_UCC, tolerance=1, isFinal=isFinal)
-    Nll = CalculateNoLoadLosses(LVNumberOfTurns, LVFoilHeight, LVFoilThiccnes, HVWireThickness, HVWireLength, CoreDiameter, LVRATE, CoreLength, LvCD, HvCD)
-    Ll, LlHv, LlLv = CalculateLoadLosses(LVNumberOfTurns, LVFoilThiccnes, CoreDiameter, LVFoilHeight, HVWireThickness, HVWireLength, MaterialResistivity, POWER, HVRATE, LVRATE, CoreLength, LvCD, HvCD)
-    strayDia = CalculateStrayDiameter(LVNumberOfTurns, LVFoilThiccnes, LVFoilHeight, HVWireThickness, HVWireLength, CoreDiameter, CoreLength, LvCD, HvCD)
-    Ux = CalculateUx(POWER, strayDia, LVNumberOfTurns, LVFoilThiccnes, LVFoilHeight, HVWireThickness, HVWireLength, FREQ, LVRATE, LvCD, HvCD)
+        LvCD, HvCD = CalculateNumberOfCoolingDucts(LVNumberOfTurns, LVFoilHeight, LVFoilThickness, HVWireThickness, HVWireLength, CoreDiameter, CoreLength, LVRATE=LVRATE, HVRATE=HVRATE, POWER=POWERRATING, FREQ=FREQUENCY, MaterialResistivity=materialToBeUsedWire_Resistivity, GUARANTEEDNLL=GUARANTEED_NO_LOAD_LOSS, GUARANTEEDLL=GUARANTEED_LOAD_LOSS, GUARANTEEDUCC=GUARANTEED_UCC, tolerance=1, isFinal=isFinal, circular=circular)
+    Nll = CalculateNoLoadLosses(LVNumberOfTurns, LVFoilHeight, LVFoilThickness, HVWireThickness, HVWireLength, CoreDiameter, LVRATE, CoreLength, LvCD, HvCD, circular)
+    Ll, LlHv, LlLv = CalculateLoadLosses(LVNumberOfTurns, LVFoilThickness, CoreDiameter, LVFoilHeight, HVWireThickness, HVWireLength, MaterialResistivity, POWER, HVRATE, LVRATE, CoreLength, LvCD, HvCD, circular)
+    strayDia = CalculateStrayDiameter(LVNumberOfTurns, LVFoilThickness, LVFoilHeight, HVWireThickness, HVWireLength, CoreDiameter, CoreLength, LvCD, HvCD, circular)
+    Ux = CalculateUx(POWER, strayDia, LVNumberOfTurns, LVFoilThickness, LVFoilHeight, HVWireThickness, HVWireLength, FREQ, LVRATE, LvCD, HvCD, circular)
     Ur = CalculateUr(Ll, POWER)
     Ucc = CalculateImpedance(Ux, Ur)
-    price = CalculatePrice(LVNumberOfTurns, LVFoilHeight, LVFoilThiccnes, HVWireThickness, HVWireLength, CoreDiameter, CoreLength, LvCD, HvCD, isFinal)
+    price = CalculatePrice(LVNumberOfTurns, LVFoilHeight, LVFoilThickness, HVWireThickness, HVWireLength, CoreDiameter, CoreLength, LvCD, HvCD, isFinal, circular)
     penaltyForNll = max(0, Nll - GUARANTEEDNLL) * PENALTY_NLL_FACTOR
     penaltyForLL = max(0, Ll - GUARANTEEDLL) * PENALTY_LL_FACTOR
     penaltyforUcc = max(0, abs(Ucc - GUARANTEED_UCC) - abs(UCC_TOLERANCE)) * PENALTY_UCC_FACTOR
@@ -565,18 +676,18 @@ def CalculateFinalizedPrice(LVNumberOfTurns, LVFoilHeight, LVFoilThiccnes, HVWir
 
 
 @njit(fastmath=True)
-def CalculateFinalizedPriceIntolerant(LVNumberOfTurns, LVFoilHeight, LVFoilThiccnes, HVWireThickness, HVWireLength, CoreDiameter, CoreLength, LVRATE=LVRATE, HVRATE=HVRATE, POWER=POWERRATING, FREQ=FREQUENCY, MaterialResistivity=materialToBeUsedWire_Resistivity, GUARANTEEDNLL=GUARANTEED_NO_LOAD_LOSS, GUARANTEEDLL=GUARANTEED_LOAD_LOSS, GUARANTEEDUCC=GUARANTEED_UCC, tolerance=1, isFinal=False, PutCoolingDucts=True):
+def CalculateFinalizedPriceIntolerant(LVNumberOfTurns, LVFoilHeight, LVFoilThickness, HVWireThickness, HVWireLength, CoreDiameter, CoreLength, LVRATE=LVRATE, HVRATE=HVRATE, POWER=POWERRATING, FREQ=FREQUENCY, MaterialResistivity=materialToBeUsedWire_Resistivity, GUARANTEEDNLL=GUARANTEED_NO_LOAD_LOSS, GUARANTEEDLL=GUARANTEED_LOAD_LOSS, GUARANTEEDUCC=GUARANTEED_UCC, tolerance=1, isFinal=False, PutCoolingDucts=True, circular=False):
     LvCD = 0
     HvCD = 0
     if PutCoolingDucts:
-        LvCD, HvCD = CalculateNumberOfCoolingDucts(LVNumberOfTurns, LVFoilHeight, LVFoilThiccnes, HVWireThickness, HVWireLength, CoreDiameter, CoreLength, LVRATE=LVRATE, HVRATE=HVRATE, POWER=POWERRATING, FREQ=FREQUENCY, MaterialResistivity=materialToBeUsedWire_Resistivity, GUARANTEEDNLL=GUARANTEED_NO_LOAD_LOSS, GUARANTEEDLL=GUARANTEED_LOAD_LOSS, GUARANTEEDUCC=GUARANTEED_UCC, tolerance=1, isFinal=False)
-    Nll = CalculateNoLoadLosses(LVNumberOfTurns, LVFoilHeight, LVFoilThiccnes, HVWireThickness, HVWireLength, CoreDiameter, LVRATE, CoreLength, LvCD, HvCD)
-    Ll, LlHv, LlLv = CalculateLoadLosses(LVNumberOfTurns, LVFoilThiccnes, CoreDiameter, LVFoilHeight, HVWireThickness, HVWireLength, MaterialResistivity, POWER, HVRATE, LVRATE, CoreLength, LvCD, HvCD)
-    strayDia = CalculateStrayDiameter(LVNumberOfTurns, LVFoilThiccnes, LVFoilHeight, HVWireThickness, HVWireLength, CoreDiameter, CoreLength, LvCD, HvCD)
-    Ux = CalculateUx(POWER, strayDia, LVNumberOfTurns, LVFoilThiccnes, LVFoilHeight, HVWireThickness, HVWireLength, FREQ, LVRATE, LvCD, HvCD)
+        LvCD, HvCD = CalculateNumberOfCoolingDucts(LVNumberOfTurns, LVFoilHeight, LVFoilThickness, HVWireThickness, HVWireLength, CoreDiameter, CoreLength, LVRATE=LVRATE, HVRATE=HVRATE, POWER=POWERRATING, FREQ=FREQUENCY, MaterialResistivity=materialToBeUsedWire_Resistivity, GUARANTEEDNLL=GUARANTEED_NO_LOAD_LOSS, GUARANTEEDLL=GUARANTEED_LOAD_LOSS, GUARANTEEDUCC=GUARANTEED_UCC, tolerance=1, isFinal=False, circular=circular)
+    Nll = CalculateNoLoadLosses(LVNumberOfTurns, LVFoilHeight, LVFoilThickness, HVWireThickness, HVWireLength, CoreDiameter, LVRATE, CoreLength, LvCD, HvCD, circular)
+    Ll, LlHv, LlLv = CalculateLoadLosses(LVNumberOfTurns, LVFoilThickness, CoreDiameter, LVFoilHeight, HVWireThickness, HVWireLength, MaterialResistivity, POWER, HVRATE, LVRATE, CoreLength, LvCD, HvCD, circular)
+    strayDia = CalculateStrayDiameter(LVNumberOfTurns, LVFoilThickness, LVFoilHeight, HVWireThickness, HVWireLength, CoreDiameter, CoreLength, LvCD, HvCD, circular)
+    Ux = CalculateUx(POWER, strayDia, LVNumberOfTurns, LVFoilThickness, LVFoilHeight, HVWireThickness, HVWireLength, FREQ, LVRATE, LvCD, HvCD, circular)
     Ur = CalculateUr(Ll, POWER)
     Ucc = CalculateImpedance(Ux, Ur)
-    price = CalculatePrice(LVNumberOfTurns, LVFoilHeight, LVFoilThiccnes, HVWireThickness, HVWireLength, CoreDiameter, CoreLength, LvCD, HvCD, printValues=isFinal)
+    price = CalculatePrice(LVNumberOfTurns, LVFoilHeight, LVFoilThickness, HVWireThickness, HVWireLength, CoreDiameter, CoreLength, LvCD, HvCD, printValues=isFinal, circular=circular)
     NllExtraLoss = max(0, Nll - GUARANTEEDNLL)
     LlExtraLoss = max(0, Ll - GUARANTEEDLL)
     UccExtraLoss = max(0, abs(Ucc - GUARANTEEDUCC) - abs(UCC_TOLERANCE))
@@ -601,27 +712,27 @@ def CalculateFinalizedPriceIntolerant(LVNumberOfTurns, LVFoilHeight, LVFoilThicc
 
 
 @njit(fastmath=True)
-def CalculateFinalizedPriceIntolerant_Optimized(LVNumberOfTurns, LVFoilHeight, LVFoilThiccnes, HVWireThickness, HVWireLength, CoreDiameter, CoreLength, LVRATE_VAL=LVRATE, HVRATE_VAL=HVRATE, POWER=POWERRATING, FREQ=FREQUENCY, MaterialResistivity=materialToBeUsedWire_Resistivity, GUARANTEEDNLL=GUARANTEED_NO_LOAD_LOSS, GUARANTEEDLL=GUARANTEED_LOAD_LOSS, GUARANTEEDUCC=GUARANTEED_UCC, tolerance=1, isFinal=False, PutCoolingDucts=True):
+def CalculateFinalizedPriceIntolerant_Optimized(LVNumberOfTurns, LVFoilHeight, LVFoilThickness, HVWireThickness, HVWireLength, CoreDiameter, CoreLength, LVRATE_VAL=LVRATE, HVRATE_VAL=HVRATE, POWER=POWERRATING, FREQ=FREQUENCY, MaterialResistivity=materialToBeUsedWire_Resistivity, GUARANTEEDNLL=GUARANTEED_NO_LOAD_LOSS, GUARANTEEDLL=GUARANTEED_LOAD_LOSS, GUARANTEEDUCC=GUARANTEED_UCC, tolerance=1, isFinal=False, PutCoolingDucts=True, circular=False):
     """Optimized version that calculates load losses only once when possible."""
     LvCD = 0.0
     HvCD = 0.0
     if PutCoolingDucts:
         LvCD, HvCD, Ll_zero, LlLv_zero, LlHv_zero = CalculateNumberOfCoolingDucts_WithLosses(
-            LVNumberOfTurns, LVFoilHeight, LVFoilThiccnes, HVWireThickness, HVWireLength,
-            CoreDiameter, CoreLength, MaterialResistivity, POWER, HVRATE_VAL, LVRATE_VAL, isFinal
+            LVNumberOfTurns, LVFoilHeight, LVFoilThickness, HVWireThickness, HVWireLength,
+            CoreDiameter, CoreLength, MaterialResistivity, POWER, HVRATE_VAL, LVRATE_VAL, isFinal, circular
         )
         if LvCD == 0 and HvCD == 0:
             Ll, LlHv, LlLv = Ll_zero, LlHv_zero, LlLv_zero
         else:
-            Ll, LlHv, LlLv = CalculateLoadLosses(LVNumberOfTurns, LVFoilThiccnes, CoreDiameter, LVFoilHeight, HVWireThickness, HVWireLength, MaterialResistivity, POWER, HVRATE_VAL, LVRATE_VAL, CoreLength, LvCD, HvCD)
+            Ll, LlHv, LlLv = CalculateLoadLosses(LVNumberOfTurns, LVFoilThickness, CoreDiameter, LVFoilHeight, HVWireThickness, HVWireLength, MaterialResistivity, POWER, HVRATE_VAL, LVRATE_VAL, CoreLength, LvCD, HvCD, circular)
     else:
-        Ll, LlHv, LlLv = CalculateLoadLosses(LVNumberOfTurns, LVFoilThiccnes, CoreDiameter, LVFoilHeight, HVWireThickness, HVWireLength, MaterialResistivity, POWER, HVRATE_VAL, LVRATE_VAL, CoreLength, 0, 0)
-    Nll = CalculateNoLoadLosses(LVNumberOfTurns, LVFoilHeight, LVFoilThiccnes, HVWireThickness, HVWireLength, CoreDiameter, LVRATE_VAL, CoreLength, LvCD, HvCD)
-    strayDia = CalculateStrayDiameter(LVNumberOfTurns, LVFoilThiccnes, LVFoilHeight, HVWireThickness, HVWireLength, CoreDiameter, CoreLength, LvCD, HvCD)
-    Ux = CalculateUx(POWER, strayDia, LVNumberOfTurns, LVFoilThiccnes, LVFoilHeight, HVWireThickness, HVWireLength, FREQ, LVRATE_VAL, LvCD, HvCD)
+        Ll, LlHv, LlLv = CalculateLoadLosses(LVNumberOfTurns, LVFoilThickness, CoreDiameter, LVFoilHeight, HVWireThickness, HVWireLength, MaterialResistivity, POWER, HVRATE_VAL, LVRATE_VAL, CoreLength, 0, 0, circular)
+    Nll = CalculateNoLoadLosses(LVNumberOfTurns, LVFoilHeight, LVFoilThickness, HVWireThickness, HVWireLength, CoreDiameter, LVRATE_VAL, CoreLength, LvCD, HvCD, circular)
+    strayDia = CalculateStrayDiameter(LVNumberOfTurns, LVFoilThickness, LVFoilHeight, HVWireThickness, HVWireLength, CoreDiameter, CoreLength, LvCD, HvCD, circular)
+    Ux = CalculateUx(POWER, strayDia, LVNumberOfTurns, LVFoilThickness, LVFoilHeight, HVWireThickness, HVWireLength, FREQ, LVRATE_VAL, LvCD, HvCD, circular)
     Ur = CalculateUr(Ll, POWER)
     Ucc = CalculateImpedance(Ux, Ur)
-    price = CalculatePrice(LVNumberOfTurns, LVFoilHeight, LVFoilThiccnes, HVWireThickness, HVWireLength, CoreDiameter, CoreLength, LvCD, HvCD, isFinal)
+    price = CalculatePrice(LVNumberOfTurns, LVFoilHeight, LVFoilThickness, HVWireThickness, HVWireLength, CoreDiameter, CoreLength, LvCD, HvCD, isFinal, circular)
     NllExtraLoss = max(0, Nll - GUARANTEEDNLL)
     LlExtraLoss = max(0, Ll - GUARANTEEDLL)
     UccExtraLoss = max(0, abs(Ucc - GUARANTEEDUCC) - abs(UCC_TOLERANCE))
@@ -836,7 +947,7 @@ def BucketFillingSmart(TurnsStep=1, ThicknessStep=0.2, HeightStep=50, CoreDiaSte
 
 @njit(fastmath=True, parallel=True)
 def parallel_grid_search_kernel(core_dia_arr, core_len_arr, turns_arr, height_arr, thick_arr, hvthick_arr, hvlen_arr,
-                                 tolerance, obround, put_cooling_ducts,
+                                 tolerance, obround, put_cooling_ducts, circular,
                                  LVRATE_VAL, HVRATE_VAL, POWER, FREQ, MaterialResistivity,
                                  GUARANTEEDNLL, GUARANTEEDLL, GUARANTEEDUCC,
                                  CoreFillRound, CoreFillRect, InsulationThickness):
@@ -898,12 +1009,14 @@ def parallel_grid_search_kernel(core_dia_arr, core_len_arr, turns_arr, height_ar
                             for n in range(n_hvlen):
                                 hvlen = hvlen_arr[n]
 
-                                # Basic validity checks
-                                if hvlen < hvthick:
+                                # Basic validity checks (skip for circular wire)
+                                if not circular and hvlen < hvthick:
                                     continue
 
                                 hv_layer_height = height - 50
-                                hv_turns_per_layer = (hv_layer_height / (hvlen + InsulationThickness)) - 1
+                                # For circular wire, axial space per turn = diameter (hvthick)
+                                wire_axial_size = hvthick if circular else hvlen
+                                hv_turns_per_layer = (hv_layer_height / (wire_axial_size + InsulationThickness)) - 1
                                 if hv_turns_per_layer <= 0:
                                     continue
 
@@ -914,7 +1027,7 @@ def parallel_grid_search_kernel(core_dia_arr, core_len_arr, turns_arr, height_ar
                                     LVRATE_VAL, HVRATE_VAL, POWER, FREQ,
                                     MaterialResistivity,
                                     GUARANTEEDNLL, GUARANTEEDLL, GUARANTEEDUCC,
-                                    tolerance, False, put_cooling_ducts
+                                    tolerance, False, put_cooling_ducts, circular
                                 )
 
                                 # Positive price = valid design within tolerance
@@ -944,6 +1057,790 @@ def parallel_grid_search_kernel(core_dia_arr, core_len_arr, turns_arr, height_ar
         results[i, 8] = found_valid
 
     return results
+
+
+# =============================================================================
+# PARALLEL LOCAL REFINEMENT KERNEL (for Stage 3)
+# =============================================================================
+
+@njit(fastmath=True, parallel=True)
+def parallel_local_refinement_kernel(
+    turns_arr, height_arr, thick_arr, hvthick_arr, hvlen_arr,
+    core_dia_arr, core_len_arr,
+    LVRATE_VAL, HVRATE_VAL, POWER, FREQ, MaterialResistivity,
+    GUARANTEEDNLL, GUARANTEEDLL, GUARANTEEDUCC,
+    tolerance, put_cooling_ducts, circular
+):
+    """
+    Parallel kernel for Stage 3 local refinement.
+
+    Takes flattened arrays of all parameter combinations and evaluates them in parallel.
+    Returns array of [price, turns, height, thick, hvthick, hvlen, core_dia, core_len] for each combo.
+    """
+    n_combinations = len(turns_arr)
+
+    # Results: each row = [price, turns, height, thick, hvthick, hvlen, core_dia, core_len]
+    results = np.empty((n_combinations, 8), dtype=np.float64)
+
+    for i in prange(n_combinations):
+        turns = turns_arr[i]
+        height = height_arr[i]
+        thick = thick_arr[i]
+        hvthick = hvthick_arr[i]
+        hvlen = hvlen_arr[i]
+        core_dia = core_dia_arr[i]
+        core_len = core_len_arr[i]
+
+        # Skip invalid combinations (for rectangular wire, hvlen must be >= hvthick)
+        # For circular wire, this check is skipped
+        if not circular and hvlen < hvthick:
+            results[i, 0] = 1e18
+            results[i, 1] = turns
+            results[i, 2] = height
+            results[i, 3] = thick
+            results[i, 4] = hvthick
+            results[i, 5] = hvlen
+            results[i, 6] = core_dia
+            results[i, 7] = core_len
+            continue
+
+        # Core length must not exceed core diameter
+        if core_len > core_dia:
+            results[i, 0] = 1e18
+            results[i, 1] = turns
+            results[i, 2] = height
+            results[i, 3] = thick
+            results[i, 4] = hvthick
+            results[i, 5] = hvlen
+            results[i, 6] = core_dia
+            results[i, 7] = core_len
+            continue
+
+        # Full evaluation WITH cooling ducts
+        price = CalculateFinalizedPriceIntolerant_Optimized(
+            turns, height, thick, hvthick, hvlen,
+            core_dia, core_len,
+            LVRATE_VAL, HVRATE_VAL, POWER, FREQ,
+            MaterialResistivity,
+            GUARANTEEDNLL, GUARANTEEDLL, GUARANTEEDUCC,
+            tolerance, False, put_cooling_ducts, circular
+        )
+
+        results[i, 0] = price
+        results[i, 1] = turns
+        results[i, 2] = height
+        results[i, 3] = thick
+        results[i, 4] = hvthick
+        results[i, 5] = hvlen
+        results[i, 6] = core_dia
+        results[i, 7] = core_len
+
+    return results
+
+
+def parallel_local_refinement_with_progress(
+    turns_arr, height_arr, thick_arr, hvthick_arr, hvlen_arr,
+    core_dia_arr, core_len_arr,
+    LVRATE_VAL, HVRATE_VAL, POWER, FREQ, MaterialResistivity,
+    GUARANTEEDNLL, GUARANTEEDLL, GUARANTEEDUCC,
+    tolerance, put_cooling_ducts, circular,
+    progress_callback=None, batch_size=2000
+):
+    """
+    Wrapper for parallel_local_refinement_kernel with progress reporting.
+
+    Processes in batches to allow progress updates between batches.
+    Uses smaller batch_size (2000) for more frequent progress updates.
+    """
+    import time
+    n_total = len(turns_arr)
+
+    if n_total == 0:
+        return np.empty((0, 8), dtype=np.float64)
+
+    # Always process in batches for progress updates (even for small datasets)
+    start_time = time.time()
+
+    # Use smaller batches for small datasets to get at least a few progress updates
+    effective_batch_size = min(batch_size, max(500, n_total // 5))
+    n_batches = (n_total + effective_batch_size - 1) // effective_batch_size
+    all_results = []
+
+    # Initial progress report with estimated ETA based on typical rate
+    # Estimate ~50,000-100,000 evaluations per second on CPU with parallel processing
+    estimated_rate = 75000  # evaluations per second (conservative estimate)
+    initial_eta = n_total / estimated_rate if n_total > 0 else None
+    if progress_callback:
+        try:
+            progress_callback(3, 0.68, f"Stage 3: Starting {n_total:,} evaluations...", initial_eta)
+        except:
+            pass
+
+    for batch_idx in range(n_batches):
+        start_idx = batch_idx * effective_batch_size
+        end_idx = min(start_idx + effective_batch_size, n_total)
+
+        # Extract batch
+        batch_results = parallel_local_refinement_kernel(
+            turns_arr[start_idx:end_idx],
+            height_arr[start_idx:end_idx],
+            thick_arr[start_idx:end_idx],
+            hvthick_arr[start_idx:end_idx],
+            hvlen_arr[start_idx:end_idx],
+            core_dia_arr[start_idx:end_idx],
+            core_len_arr[start_idx:end_idx],
+            LVRATE_VAL, HVRATE_VAL, POWER, FREQ, MaterialResistivity,
+            GUARANTEEDNLL, GUARANTEEDLL, GUARANTEEDUCC,
+            tolerance, put_cooling_ducts, circular
+        )
+        all_results.append(batch_results)
+
+        # Report progress with actual ETA based on elapsed time
+        if progress_callback:
+            completed = end_idx
+            progress_pct = 0.68 + (0.30 * completed / n_total)
+            elapsed = time.time() - start_time
+            if completed > 0 and completed < n_total:
+                eta = (elapsed / completed) * (n_total - completed)
+            else:
+                eta = None
+            try:
+                progress_callback(3, progress_pct,
+                                f"Stage 3: {completed:,}/{n_total:,} ({100*completed/n_total:.1f}%)", eta)
+            except:
+                pass
+
+    return np.vstack(all_results)
+
+
+def generate_local_combinations(turns_range, height_range, thick_range,
+                                 hvthick_range, hvlen_range,
+                                 core_dia_range, core_len_range):
+    """
+    Generate flattened arrays of all parameter combinations for parallel processing.
+
+    Returns tuple of (turns_arr, height_arr, thick_arr, hvthick_arr, hvlen_arr,
+                      core_dia_arr, core_len_arr) as numpy arrays.
+
+    WARNING: For large combinations (>10M), use generate_local_combinations_chunked instead.
+    """
+    # Calculate total combinations
+    n_total = (len(turns_range) * len(height_range) * len(thick_range) *
+               len(hvthick_range) * len(hvlen_range) *
+               len(core_dia_range) * len(core_len_range))
+
+    # Pre-allocate arrays
+    turns_arr = np.empty(n_total, dtype=np.float64)
+    height_arr = np.empty(n_total, dtype=np.float64)
+    thick_arr = np.empty(n_total, dtype=np.float64)
+    hvthick_arr = np.empty(n_total, dtype=np.float64)
+    hvlen_arr = np.empty(n_total, dtype=np.float64)
+    core_dia_arr = np.empty(n_total, dtype=np.float64)
+    core_len_arr = np.empty(n_total, dtype=np.float64)
+
+    # Fill arrays with all combinations
+    idx = 0
+    for cd in core_dia_range:
+        for cl in core_len_range:
+            for t in turns_range:
+                for h in height_range:
+                    for th in thick_range:
+                        for hvth in hvthick_range:
+                            for hvl in hvlen_range:
+                                turns_arr[idx] = t
+                                height_arr[idx] = h
+                                thick_arr[idx] = th
+                                hvthick_arr[idx] = hvth
+                                hvlen_arr[idx] = hvl
+                                core_dia_arr[idx] = cd
+                                core_len_arr[idx] = cl
+                                idx += 1
+
+    return turns_arr, height_arr, thick_arr, hvthick_arr, hvlen_arr, core_dia_arr, core_len_arr
+
+
+def streaming_local_refinement(
+    turns_range, height_range, thick_range, hvthick_range, hvlen_range,
+    core_dia_range, core_len_range,
+    LVRATE_VAL, HVRATE_VAL, POWER, FREQ, MaterialResistivity,
+    GUARANTEEDNLL, GUARANTEEDLL, GUARANTEEDUCC,
+    tolerance, put_cooling_ducts, circular,
+    progress_callback=None, chunk_size=100000
+):
+    """
+    Streaming local refinement that generates and processes combinations in chunks.
+
+    This avoids memory issues for large search spaces (>10M combinations).
+    Generates chunks on-the-fly, processes them, and tracks the best result.
+    """
+    import time
+
+    # Convert ranges to lists for indexing
+    turns_list = list(turns_range)
+    height_list = list(height_range)
+    thick_list = list(thick_range)
+    hvthick_list = list(hvthick_range)
+    hvlen_list = list(hvlen_range)
+    core_dia_list = list(core_dia_range)
+    core_len_list = list(core_len_range)
+
+    # Calculate total combinations
+    n_turns = len(turns_list)
+    n_height = len(height_list)
+    n_thick = len(thick_list)
+    n_hvthick = len(hvthick_list)
+    n_hvlen = len(hvlen_list)
+    n_core_dia = len(core_dia_list)
+    n_core_len = len(core_len_list)
+
+    n_total = n_turns * n_height * n_thick * n_hvthick * n_hvlen * n_core_dia * n_core_len
+
+    if n_total == 0:
+        return None
+
+    # Initialize best result tracking
+    best_price = 1e18
+    best_params = None
+
+    start_time = time.time()
+    processed = 0
+
+    # Initial progress report
+    if progress_callback:
+        estimated_rate = 50000  # Conservative estimate
+        initial_eta = n_total / estimated_rate
+        try:
+            progress_callback(3, 0.68, f"Stage 3: Starting {n_total:,} evaluations...", initial_eta)
+        except:
+            pass
+
+    # Pre-allocate chunk arrays (reused for each chunk)
+    actual_chunk_size = min(chunk_size, n_total)
+    turns_arr = np.empty(actual_chunk_size, dtype=np.float64)
+    height_arr = np.empty(actual_chunk_size, dtype=np.float64)
+    thick_arr = np.empty(actual_chunk_size, dtype=np.float64)
+    hvthick_arr = np.empty(actual_chunk_size, dtype=np.float64)
+    hvlen_arr = np.empty(actual_chunk_size, dtype=np.float64)
+    core_dia_arr = np.empty(actual_chunk_size, dtype=np.float64)
+    core_len_arr = np.empty(actual_chunk_size, dtype=np.float64)
+
+    # Process combinations in chunks using nested iteration
+    chunk_idx = 0
+    for cd_idx, cd in enumerate(core_dia_list):
+        for cl_idx, cl in enumerate(core_len_list):
+            for t_idx, t in enumerate(turns_list):
+                for h_idx, h in enumerate(height_list):
+                    for th_idx, th in enumerate(thick_list):
+                        for hvth_idx, hvth in enumerate(hvthick_list):
+                            for hvl_idx, hvl in enumerate(hvlen_list):
+                                turns_arr[chunk_idx] = t
+                                height_arr[chunk_idx] = h
+                                thick_arr[chunk_idx] = th
+                                hvthick_arr[chunk_idx] = hvth
+                                hvlen_arr[chunk_idx] = hvl
+                                core_dia_arr[chunk_idx] = cd
+                                core_len_arr[chunk_idx] = cl
+                                chunk_idx += 1
+
+                                # Process chunk when full
+                                if chunk_idx >= actual_chunk_size:
+                                    # Run parallel kernel on this chunk
+                                    results = parallel_local_refinement_kernel(
+                                        turns_arr[:chunk_idx], height_arr[:chunk_idx],
+                                        thick_arr[:chunk_idx], hvthick_arr[:chunk_idx],
+                                        hvlen_arr[:chunk_idx], core_dia_arr[:chunk_idx],
+                                        core_len_arr[:chunk_idx],
+                                        LVRATE_VAL, HVRATE_VAL, POWER, FREQ, MaterialResistivity,
+                                        GUARANTEEDNLL, GUARANTEEDLL, GUARANTEEDUCC,
+                                        tolerance, put_cooling_ducts, circular
+                                    )
+
+                                    # Update best result
+                                    valid_mask = (results[:, 0] > 0) & (results[:, 0] < 1e17)
+                                    if np.any(valid_mask):
+                                        valid_results = results[valid_mask]
+                                        chunk_best_idx = np.argmin(valid_results[:, 0])
+                                        chunk_best_price = valid_results[chunk_best_idx, 0]
+                                        if chunk_best_price < best_price:
+                                            best_price = chunk_best_price
+                                            best_params = valid_results[chunk_best_idx].copy()
+
+                                    # Update progress
+                                    processed += chunk_idx
+                                    chunk_idx = 0
+
+                                    if progress_callback:
+                                        elapsed = time.time() - start_time
+                                        progress_pct = 0.68 + (0.30 * processed / n_total)
+                                        if processed > 0 and processed < n_total:
+                                            eta = (elapsed / processed) * (n_total - processed)
+                                        else:
+                                            eta = None
+                                        try:
+                                            progress_callback(3, progress_pct,
+                                                f"Stage 3: {processed:,}/{n_total:,} ({100*processed/n_total:.1f}%) Best: {best_price:.2f}",
+                                                eta)
+                                        except:
+                                            pass
+
+    # Process remaining combinations in final partial chunk
+    if chunk_idx > 0:
+        results = parallel_local_refinement_kernel(
+            turns_arr[:chunk_idx], height_arr[:chunk_idx],
+            thick_arr[:chunk_idx], hvthick_arr[:chunk_idx],
+            hvlen_arr[:chunk_idx], core_dia_arr[:chunk_idx],
+            core_len_arr[:chunk_idx],
+            LVRATE_VAL, HVRATE_VAL, POWER, FREQ, MaterialResistivity,
+            GUARANTEEDNLL, GUARANTEEDLL, GUARANTEEDUCC,
+            tolerance, put_cooling_ducts, circular
+        )
+
+        valid_mask = (results[:, 0] > 0) & (results[:, 0] < 1e17)
+        if np.any(valid_mask):
+            valid_results = results[valid_mask]
+            chunk_best_idx = np.argmin(valid_results[:, 0])
+            chunk_best_price = valid_results[chunk_best_idx, 0]
+            if chunk_best_price < best_price:
+                best_price = chunk_best_price
+                best_params = valid_results[chunk_best_idx].copy()
+
+        processed += chunk_idx
+
+    # Final progress report
+    if progress_callback:
+        try:
+            progress_callback(3, 0.98, f"Stage 3: Completed {processed:,} evaluations. Best: {best_price:.2f}", None)
+        except:
+            pass
+
+    return best_params
+
+
+def local_optimizer_polish(
+    initial_params,
+    tolerance, put_cooling_ducts,
+    progress_callback=None
+):
+    """
+    Polish Stage 3 result using L-BFGS-B local optimizer.
+
+    Refines the coarse grid result to find true local minimum
+    with high precision. Uses scipy's bounded L-BFGS-B method.
+
+    Args:
+        initial_params: tuple/list of (turns, height, thick, hvthick, hvlen, core_dia, core_len)
+        tolerance: Tolerance percentage for constraints
+        put_cooling_ducts: Whether to include cooling duct calculations
+        progress_callback: Optional progress callback function
+
+    Returns:
+        tuple: (optimized_params_array, final_price)
+    """
+    if not SCIPY_AVAILABLE:
+        print("  scipy not available, skipping local optimizer polish")
+        return initial_params, 1e18
+
+    from scipy.optimize import minimize
+    import time
+
+    start_time = time.time()
+    eval_count = [0]  # Use list for mutable in closure
+
+    def objective(x):
+        eval_count[0] += 1
+        price = CalculateFinalizedPriceIntolerant_Optimized(
+            int(round(x[0])), x[1], x[2], x[3], x[4], x[5], x[6],
+            LVRATE, HVRATE, POWERRATING, FREQUENCY,
+            materialToBeUsedWire_Resistivity,
+            GUARANTEED_NO_LOAD_LOSS, GUARANTEED_LOAD_LOSS, GUARANTEED_UCC,
+            tolerance, False, put_cooling_ducts, circular=HV_WIRE_CIRCULAR
+        )
+        # Handle invalid prices
+        if price < 0:
+            return abs(price) + 1e6  # Penalize invalid but don't return inf
+        return price
+
+    # Convert to list if needed
+    x0 = list(initial_params)
+
+    # Bounds around initial point (reasonable local search range)
+    bounds = [
+        (max(FOILTURNS_MINIMUM, x0[0] - 3), min(FOILTURNS_MAXIMUM, x0[0] + 3)),
+        (max(FOILHEIGHT_MINIMUM, x0[1] - 30), min(FOILHEIGHT_MAXIMUM, x0[1] + 30)),
+        (max(FOILTHICKNESS_MINIMUM, x0[2] - 0.15), min(FOILTHICKNESS_MAXIMUM, x0[2] + 0.15)),
+        (max(HVTHICK_MINIMUM, x0[3] - 0.15), min(HVTHICK_MAXIMUM, x0[3] + 0.15)),
+        (max(HV_LEN_MINIMUM, x0[4] - 0.5), min(HV_LEN_MAXIMUM, x0[4] + 0.5)),
+        (max(CORE_MINIMUM, x0[5] - 15), min(CORE_MAXIMUM, x0[5] + 15)),
+        (max(0, x0[6] - 15), min(x0[5] + 15, x0[6] + 15)),  # core_len bounded by core_dia
+    ]
+
+    try:
+        result = minimize(
+            objective,
+            x0,
+            method='L-BFGS-B',
+            bounds=bounds,
+            options={
+                'maxiter': 200,
+                'ftol': 1e-8,
+                'gtol': 1e-6,
+                'disp': False
+            }
+        )
+
+        elapsed = time.time() - start_time
+        print(f"  Local optimizer: {eval_count[0]} evaluations in {elapsed:.2f}s")
+
+        if result.success or result.fun < objective(x0):
+            return result.x, result.fun
+        else:
+            print(f"  Optimizer did not improve (status: {result.message})")
+            return np.array(x0), objective(x0)
+
+    except Exception as e:
+        print(f"  Local optimizer failed: {e}")
+        return np.array(x0), objective(x0)
+
+
+def basin_hopping_polish(
+    initial_params,
+    tolerance, put_cooling_ducts,
+    progress_callback=None
+):
+    """
+    Global search with local refinement using basin hopping.
+
+    Escapes local minima by combining random jumps with L-BFGS-B refinement.
+    Good for finding better basins than pure local search.
+
+    Args:
+        initial_params: tuple/list of (turns, height, thick, hvthick, hvlen, core_dia, core_len)
+        tolerance: Tolerance percentage for constraints
+        put_cooling_ducts: Whether to include cooling duct calculations
+        progress_callback: Optional progress callback function
+
+    Returns:
+        tuple: (optimized_params_array, final_price)
+    """
+    if not SCIPY_AVAILABLE:
+        print("  scipy not available, skipping basin hopping")
+        return np.array(initial_params), 1e18
+
+    from scipy.optimize import basinhopping
+    import time
+
+    start_time = time.time()
+    eval_count = [0]
+
+    def objective(x):
+        eval_count[0] += 1
+        price = CalculateFinalizedPriceIntolerant_Optimized(
+            int(round(x[0])), x[1], x[2], x[3], x[4], x[5], x[6],
+            LVRATE, HVRATE, POWERRATING, FREQUENCY,
+            materialToBeUsedWire_Resistivity,
+            GUARANTEED_NO_LOAD_LOSS, GUARANTEED_LOAD_LOSS, GUARANTEED_UCC,
+            tolerance, False, put_cooling_ducts, circular=HV_WIRE_CIRCULAR
+        )
+        if price < 0:
+            return abs(price) + 1e6
+        return price
+
+    x0 = list(initial_params)
+
+    # Bounds around initial point
+    bounds = [
+        (max(FOILTURNS_MINIMUM, x0[0] - 5), min(FOILTURNS_MAXIMUM, x0[0] + 5)),
+        (max(FOILHEIGHT_MINIMUM, x0[1] - 50), min(FOILHEIGHT_MAXIMUM, x0[1] + 50)),
+        (max(FOILTHICKNESS_MINIMUM, x0[2] - 0.3), min(FOILTHICKNESS_MAXIMUM, x0[2] + 0.3)),
+        (max(HVTHICK_MINIMUM, x0[3] - 0.3), min(HVTHICK_MAXIMUM, x0[3] + 0.3)),
+        (max(HV_LEN_MINIMUM, x0[4] - 1.0), min(HV_LEN_MAXIMUM, x0[4] + 1.0)),
+        (max(CORE_MINIMUM, x0[5] - 25), min(CORE_MAXIMUM, x0[5] + 25)),
+        (max(0, x0[6] - 25), min(x0[5] + 25, x0[6] + 25)),
+    ]
+
+    # Custom step taker that respects bounds
+    class BoundedStep:
+        def __init__(self, stepsize=0.5):
+            self.stepsize = stepsize
+
+        def __call__(self, x):
+            # Random step scaled by parameter ranges
+            x_new = x.copy()
+            for i, (lo, hi) in enumerate(bounds):
+                step = np.random.uniform(-1, 1) * self.stepsize * (hi - lo) * 0.1
+                x_new[i] = np.clip(x[i] + step, lo, hi)
+            return x_new
+
+    # Local minimizer settings
+    minimizer_kwargs = {
+        'method': 'L-BFGS-B',
+        'bounds': bounds,
+        'options': {'maxiter': 50, 'ftol': 1e-6}
+    }
+
+    try:
+        result = basinhopping(
+            objective,
+            x0,
+            minimizer_kwargs=minimizer_kwargs,
+            niter=15,  # Number of basin hops
+            T=50.0,    # Temperature for acceptance
+            stepsize=0.5,
+            take_step=BoundedStep(0.5),
+            seed=42
+        )
+
+        elapsed = time.time() - start_time
+        print(f"  Basin hopping: {eval_count[0]} evaluations in {elapsed:.2f}s, best={result.fun:.2f}")
+
+        return result.x, result.fun
+
+    except Exception as e:
+        print(f"  Basin hopping failed: {e}")
+        return np.array(x0), objective(x0)
+
+
+def dual_annealing_polish(
+    initial_params,
+    tolerance, put_cooling_ducts,
+    progress_callback=None
+):
+    """
+    Handle discontinuities with dual annealing.
+
+    Combines simulated annealing (global) with local search.
+    Excellent for functions with discontinuities like cooling duct count changes.
+
+    Args:
+        initial_params: tuple/list of (turns, height, thick, hvthick, hvlen, core_dia, core_len)
+        tolerance: Tolerance percentage for constraints
+        put_cooling_ducts: Whether to include cooling duct calculations
+        progress_callback: Optional progress callback function
+
+    Returns:
+        tuple: (optimized_params_array, final_price)
+    """
+    if not SCIPY_AVAILABLE:
+        print("  scipy not available, skipping dual annealing")
+        return np.array(initial_params), 1e18
+
+    from scipy.optimize import dual_annealing
+    import time
+
+    start_time = time.time()
+    eval_count = [0]
+
+    def objective(x):
+        eval_count[0] += 1
+        price = CalculateFinalizedPriceIntolerant_Optimized(
+            int(round(x[0])), x[1], x[2], x[3], x[4], x[5], x[6],
+            LVRATE, HVRATE, POWERRATING, FREQUENCY,
+            materialToBeUsedWire_Resistivity,
+            GUARANTEED_NO_LOAD_LOSS, GUARANTEED_LOAD_LOSS, GUARANTEED_UCC,
+            tolerance, False, put_cooling_ducts, circular=HV_WIRE_CIRCULAR
+        )
+        if price < 0:
+            return abs(price) + 1e6
+        return price
+
+    x0 = list(initial_params)
+
+    # Bounds around initial point (wider for global exploration)
+    bounds = [
+        (max(FOILTURNS_MINIMUM, x0[0] - 5), min(FOILTURNS_MAXIMUM, x0[0] + 5)),
+        (max(FOILHEIGHT_MINIMUM, x0[1] - 50), min(FOILHEIGHT_MAXIMUM, x0[1] + 50)),
+        (max(FOILTHICKNESS_MINIMUM, x0[2] - 0.3), min(FOILTHICKNESS_MAXIMUM, x0[2] + 0.3)),
+        (max(HVTHICK_MINIMUM, x0[3] - 0.3), min(HVTHICK_MAXIMUM, x0[3] + 0.3)),
+        (max(HV_LEN_MINIMUM, x0[4] - 1.0), min(HV_LEN_MAXIMUM, x0[4] + 1.0)),
+        (max(CORE_MINIMUM, x0[5] - 25), min(CORE_MAXIMUM, x0[5] + 25)),
+        (max(0, x0[6] - 25), min(x0[5] + 25, x0[6] + 25)),
+    ]
+
+    try:
+        # Try newer scipy API first (minimizer_kwargs), fall back to older API (local_search_options)
+        try:
+            result = dual_annealing(
+                objective,
+                bounds=bounds,
+                x0=x0,
+                maxiter=300,
+                initial_temp=5230.0,
+                restart_temp_ratio=2e-5,
+                minimizer_kwargs={'method': 'L-BFGS-B', 'options': {'maxiter': 50}},
+                seed=42
+            )
+        except TypeError:
+            # Older scipy version
+            result = dual_annealing(
+                objective,
+                bounds=bounds,
+                x0=x0,
+                maxiter=300,
+                initial_temp=5230.0,
+                restart_temp_ratio=2e-5,
+                local_search_options={'method': 'L-BFGS-B', 'options': {'maxiter': 50}},
+                seed=42
+            )
+
+        elapsed = time.time() - start_time
+        print(f"  Dual annealing: {eval_count[0]} evaluations in {elapsed:.2f}s, best={result.fun:.2f}")
+
+        return result.x, result.fun
+
+    except Exception as e:
+        print(f"  Dual annealing failed: {e}")
+        return np.array(x0), objective(x0)
+
+
+def bayesian_polish(
+    initial_params,
+    tolerance, put_cooling_ducts,
+    progress_callback=None
+):
+    """
+    Smart optimization with Gaussian Process surrogate model.
+
+    Builds a probabilistic model of the objective function and uses it
+    to decide where to sample next. Very efficient for expensive functions.
+
+    Args:
+        initial_params: tuple/list of (turns, height, thick, hvthick, hvlen, core_dia, core_len)
+        tolerance: Tolerance percentage for constraints
+        put_cooling_ducts: Whether to include cooling duct calculations
+        progress_callback: Optional progress callback function
+
+    Returns:
+        tuple: (optimized_params_array, final_price)
+    """
+    try:
+        from skopt import gp_minimize
+        from skopt.space import Real, Integer
+    except ImportError:
+        print("  scikit-optimize not available, skipping Bayesian optimization")
+        return np.array(initial_params), 1e18
+
+    import time
+
+    start_time = time.time()
+    eval_count = [0]
+
+    def objective(x):
+        eval_count[0] += 1
+        price = CalculateFinalizedPriceIntolerant_Optimized(
+            int(round(x[0])), x[1], x[2], x[3], x[4], x[5], x[6],
+            LVRATE, HVRATE, POWERRATING, FREQUENCY,
+            materialToBeUsedWire_Resistivity,
+            GUARANTEED_NO_LOAD_LOSS, GUARANTEED_LOAD_LOSS, GUARANTEED_UCC,
+            tolerance, False, put_cooling_ducts, circular=HV_WIRE_CIRCULAR
+        )
+        if price < 0:
+            return abs(price) + 1e6
+        return price
+
+    x0 = list(initial_params)
+    x0[0] = int(round(x0[0]))  # Ensure turns is integer for Integer dimension
+
+    # Define search space around initial point with valid bounds
+    turns_lo = int(max(FOILTURNS_MINIMUM, x0[0] - 5))
+    turns_hi = int(min(FOILTURNS_MAXIMUM, x0[0] + 5))
+    if turns_lo >= turns_hi:
+        turns_hi = turns_lo + 1  # Ensure valid range
+
+    space = [
+        Integer(turns_lo, turns_hi, name='turns'),
+        Real(max(FOILHEIGHT_MINIMUM, x0[1] - 50), min(FOILHEIGHT_MAXIMUM, x0[1] + 50), name='height'),
+        Real(max(FOILTHICKNESS_MINIMUM, x0[2] - 0.3), min(FOILTHICKNESS_MAXIMUM, x0[2] + 0.3), name='thick'),
+        Real(max(HVTHICK_MINIMUM, x0[3] - 0.3), min(HVTHICK_MAXIMUM, x0[3] + 0.3), name='hvthick'),
+        Real(max(HV_LEN_MINIMUM, x0[4] - 1.0), min(HV_LEN_MAXIMUM, x0[4] + 1.0), name='hvlen'),
+        Real(max(CORE_MINIMUM, x0[5] - 25), min(CORE_MAXIMUM, x0[5] + 25), name='core_dia'),
+        Real(max(0, x0[6] - 25), min(x0[5] + 25, x0[6] + 25), name='core_len'),
+    ]
+
+    try:
+        result = gp_minimize(
+            objective,
+            space,
+            x0=x0,
+            n_calls=100,
+            n_initial_points=10,
+            acq_func='EI',  # Expected Improvement
+            random_state=42,
+            verbose=False
+        )
+
+        elapsed = time.time() - start_time
+        print(f"  Bayesian optimization: {eval_count[0]} evaluations in {elapsed:.2f}s, best={result.fun:.2f}")
+
+        return np.array(result.x), result.fun
+
+    except Exception as e:
+        print(f"  Bayesian optimization failed: {e}")
+        return np.array(x0), 1e18
+
+
+def ensemble_optimize(
+    initial_params,
+    tolerance, put_cooling_ducts,
+    progress_callback=None
+):
+    """
+    Run multiple optimizers in parallel and return the best result.
+
+    Combines the strengths of different optimization methods:
+    - L-BFGS-B: Fast local precision
+    - Basin Hopping: Escapes local minima
+    - Dual Annealing: Handles discontinuities
+    - Bayesian: Smart sampling for expensive functions
+
+    Args:
+        initial_params: tuple/list of (turns, height, thick, hvthick, hvlen, core_dia, core_len)
+        tolerance: Tolerance percentage for constraints
+        put_cooling_ducts: Whether to include cooling duct calculations
+        progress_callback: Optional progress callback function
+
+    Returns:
+        tuple: (optimized_params_array, final_price, winning_method)
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    import time
+
+    start_time = time.time()
+    print(f"\n  [ENSEMBLE] Running 4 optimizers in parallel...")
+
+    results = {}
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        futures = {
+            executor.submit(local_optimizer_polish, initial_params, tolerance, put_cooling_ducts, None): 'L-BFGS-B',
+            executor.submit(basin_hopping_polish, initial_params, tolerance, put_cooling_ducts, None): 'Basin Hopping',
+            executor.submit(dual_annealing_polish, initial_params, tolerance, put_cooling_ducts, None): 'Dual Annealing',
+            executor.submit(bayesian_polish, initial_params, tolerance, put_cooling_ducts, None): 'Bayesian',
+        }
+
+        for future in as_completed(futures):
+            method = futures[future]
+            try:
+                params, price = future.result()
+                results[method] = (params, price)
+            except Exception as e:
+                print(f"  {method} failed: {e}")
+                results[method] = (np.array(initial_params), 1e18)
+
+    # Find best result
+    best_method = min(results, key=lambda k: results[k][1])
+    best_params, best_price = results[best_method]
+
+    elapsed = time.time() - start_time
+    print(f"\n  [ENSEMBLE] Complete in {elapsed:.2f}s")
+    print(f"  Results summary:")
+    for method, (_, price) in sorted(results.items(), key=lambda x: x[1][1]):
+        marker = " <-- BEST" if method == best_method else ""
+        if price < 1e17:
+            print(f"    {method}: {price:.2f}{marker}")
+        else:
+            print(f"    {method}: FAILED{marker}")
+
+    return best_params, best_price, best_method
 
 
 # =============================================================================
@@ -990,10 +1887,12 @@ if CUDA_AVAILABLE:
         return avg_dia * math.pi * lv_turns
 
     @cuda.jit(device=True)
-    def cuda_calculate_radial_thickness_hv(lv_height, lv_turns, hv_thick, hv_len, n_ducts, hv_rate, lv_rate, insulation_wire, hv_insulation_thick, duct_thick):
+    def cuda_calculate_radial_thickness_hv(lv_height, lv_turns, hv_thick, hv_len, n_ducts, hv_rate, lv_rate, insulation_wire, hv_insulation_thick, duct_thick, circular):
         hv_turns = lv_turns * (hv_rate / lv_rate)
         hv_layer_height = lv_height - 50.0
-        hv_turns_per_layer = (hv_layer_height / (hv_len + insulation_wire)) - 1.0
+        # For circular wire, axial space per turn = diameter (thickness)
+        wire_axial_size = hv_thick if circular else hv_len
+        hv_turns_per_layer = (hv_layer_height / (wire_axial_size + insulation_wire)) - 1.0
         if hv_turns_per_layer <= 0:
             return 1e10  # Invalid
         hv_layer_number = math.ceil(hv_turns / hv_turns_per_layer)
@@ -1001,26 +1900,26 @@ if CUDA_AVAILABLE:
 
     @cuda.jit(device=True)
     def cuda_calculate_avg_diameter_hv(lv_turns, lv_thick, core_dia, lv_height, hv_thick, hv_len, core_len, n_ducts_lv, n_ducts_hv,
-                                        dist_core_lv, main_gap, hv_rate, lv_rate, insulation_wire, lv_insulation_thick, hv_insulation_thick, duct_thick):
+                                        dist_core_lv, main_gap, hv_rate, lv_rate, insulation_wire, lv_insulation_thick, hv_insulation_thick, duct_thick, circular):
         radial_lv = cuda_calculate_radial_thickness_lv(lv_turns, lv_thick, n_ducts_lv, lv_insulation_thick, duct_thick)
-        radial_hv = cuda_calculate_radial_thickness_hv(lv_height, lv_turns, hv_thick, hv_len, n_ducts_hv, hv_rate, lv_rate, insulation_wire, hv_insulation_thick, duct_thick)
+        radial_hv = cuda_calculate_radial_thickness_hv(lv_height, lv_turns, hv_thick, hv_len, n_ducts_hv, hv_rate, lv_rate, insulation_wire, hv_insulation_thick, duct_thick, circular)
         return core_dia + 2.0 * dist_core_lv + 2.0 * radial_lv + 2.0 * main_gap + radial_hv + (2.0 * core_len / math.pi)
 
     @cuda.jit(device=True)
     def cuda_calculate_total_length_hv(lv_turns, lv_thick, core_dia, lv_height, hv_thick, hv_len, core_len, n_ducts_lv, n_ducts_hv,
-                                        dist_core_lv, main_gap, hv_rate, lv_rate, insulation_wire, lv_insulation_thick, hv_insulation_thick, duct_thick):
+                                        dist_core_lv, main_gap, hv_rate, lv_rate, insulation_wire, lv_insulation_thick, hv_insulation_thick, duct_thick, circular):
         hv_turns = lv_turns * hv_rate / lv_rate
         avg_dia = cuda_calculate_avg_diameter_hv(lv_turns, lv_thick, core_dia, lv_height, hv_thick, hv_len, core_len, n_ducts_lv, n_ducts_hv,
-                                                  dist_core_lv, main_gap, hv_rate, lv_rate, insulation_wire, lv_insulation_thick, hv_insulation_thick, duct_thick)
+                                                  dist_core_lv, main_gap, hv_rate, lv_rate, insulation_wire, lv_insulation_thick, hv_insulation_thick, duct_thick, circular)
         return avg_dia * math.pi * hv_turns
 
     @cuda.jit(device=True)
     def cuda_calculate_core_weight(lv_turns, lv_height, lv_thick, hv_thick, hv_len, core_dia, core_len, n_ducts_lv, n_ducts_hv,
                                     dist_core_lv, main_gap, phase_gap, hv_rate, lv_rate, insulation_wire,
-                                    lv_insulation_thick, hv_insulation_thick, duct_thick, core_density, core_fill_round, core_fill_rect):
+                                    lv_insulation_thick, hv_insulation_thick, duct_thick, core_density, core_fill_round, core_fill_rect, circular):
         window_height = lv_height + 40.0
         radial_lv = cuda_calculate_radial_thickness_lv(lv_turns, lv_thick, n_ducts_lv, lv_insulation_thick, duct_thick)
-        radial_hv = cuda_calculate_radial_thickness_hv(lv_height, lv_turns, hv_thick, hv_len, n_ducts_hv, hv_rate, lv_rate, insulation_wire, hv_insulation_thick, duct_thick)
+        radial_hv = cuda_calculate_radial_thickness_hv(lv_height, lv_turns, hv_thick, hv_len, n_ducts_hv, hv_rate, lv_rate, insulation_wire, hv_insulation_thick, duct_thick, circular)
         radial_total = radial_lv + radial_hv + main_gap + dist_core_lv
         center_between_legs = (core_dia + radial_total * 2.0) + phase_gap
         rect_weight = (((3.0 * window_height) + 2.0 * (2.0 * center_between_legs + core_dia)) * (core_dia * core_len / 100.0) * core_density * core_fill_rect) / 1e6
@@ -1030,8 +1929,14 @@ if CUDA_AVAILABLE:
         return (rect_weight + round_weight) * 100.0
 
     @cuda.jit(device=True)
-    def cuda_calculate_section_hv(thickness, length):
-        return (thickness * length) - (thickness**2) + (((thickness / 2.0)**2) * math.pi)
+    def cuda_calculate_section_hv(thickness, length, circular):
+        if circular:
+            # Circular wire: area = pi * (diameter/2)^2
+            radius = thickness / 2.0
+            return math.pi * radius * radius
+        else:
+            # Rectangular wire with rounded corners
+            return (thickness * length) - (thickness**2) + (((thickness / 2.0)**2) * math.pi)
 
     @cuda.jit(device=True)
     def cuda_calculate_section_lv(height, thickness):
@@ -1039,12 +1944,12 @@ if CUDA_AVAILABLE:
 
     @cuda.jit(device=True)
     def cuda_calculate_load_losses(lv_turns, lv_thick, core_dia, lv_height, hv_thick, hv_len, resistivity, power, hv_rate, lv_rate, core_len, n_ducts_lv, n_ducts_hv,
-                                    dist_core_lv, main_gap, insulation_wire, lv_insulation_thick, hv_insulation_thick, duct_thick, add_loss_lv, add_loss_hv):
+                                    dist_core_lv, main_gap, insulation_wire, lv_insulation_thick, hv_insulation_thick, duct_thick, add_loss_lv, add_loss_hv, circular):
         lv_length = cuda_calculate_total_length_lv(lv_turns, lv_thick, core_dia, core_len, n_ducts_lv, dist_core_lv, lv_insulation_thick, duct_thick)
         hv_length = cuda_calculate_total_length_hv(lv_turns, lv_thick, core_dia, lv_height, hv_thick, hv_len, core_len, n_ducts_lv, n_ducts_hv,
-                                                    dist_core_lv, main_gap, hv_rate, lv_rate, insulation_wire, lv_insulation_thick, hv_insulation_thick, duct_thick)
+                                                    dist_core_lv, main_gap, hv_rate, lv_rate, insulation_wire, lv_insulation_thick, hv_insulation_thick, duct_thick, circular)
         lv_section = cuda_calculate_section_lv(lv_height, lv_thick)
-        hv_section = cuda_calculate_section_hv(hv_thick, hv_len)
+        hv_section = cuda_calculate_section_hv(hv_thick, hv_len, circular)
         lv_resistance = (lv_length / 1000.0) * resistivity / lv_section
         hv_resistance = (hv_length / 1000.0) * resistivity / hv_section
         hv_current = (power * 1000.0) / (hv_rate * 3.0)
@@ -1056,10 +1961,10 @@ if CUDA_AVAILABLE:
     @cuda.jit(device=True)
     def cuda_calculate_no_load_losses(lv_turns, lv_height, lv_thick, hv_thick, hv_len, core_dia, lv_rate, core_len, n_ducts_lv, n_ducts_hv,
                                        dist_core_lv, main_gap, phase_gap, hv_rate, insulation_wire,
-                                       lv_insulation_thick, hv_insulation_thick, duct_thick, core_density, core_fill_round, core_fill_rect, freq):
+                                       lv_insulation_thick, hv_insulation_thick, duct_thick, core_density, core_fill_round, core_fill_rect, freq, circular):
         core_weight = cuda_calculate_core_weight(lv_turns, lv_height, lv_thick, hv_thick, hv_len, core_dia, core_len, n_ducts_lv, n_ducts_hv,
                                                   dist_core_lv, main_gap, phase_gap, hv_rate, lv_rate, insulation_wire,
-                                                  lv_insulation_thick, hv_insulation_thick, duct_thick, core_density, core_fill_round, core_fill_rect)
+                                                  lv_insulation_thick, hv_insulation_thick, duct_thick, core_density, core_fill_round, core_fill_rect, circular)
         volts_per_turn = lv_rate / lv_turns
         induction = cuda_calculate_induction(volts_per_turn, core_dia, core_len, freq, core_fill_round, core_fill_rect)
         watts_per_kg = cuda_calculate_watts_per_kg(induction)
@@ -1067,10 +1972,10 @@ if CUDA_AVAILABLE:
 
     @cuda.jit(device=True)
     def cuda_calculate_stray_diameter(lv_turns, lv_thick, lv_height, hv_thick, hv_len, core_dia, core_len, n_ducts_lv, n_ducts_hv,
-                                       dist_core_lv, main_gap, hv_rate, lv_rate, insulation_wire, lv_insulation_thick, hv_insulation_thick, duct_thick):
+                                       dist_core_lv, main_gap, hv_rate, lv_rate, insulation_wire, lv_insulation_thick, hv_insulation_thick, duct_thick, circular):
         radial_lv = cuda_calculate_radial_thickness_lv(lv_turns, lv_thick, n_ducts_lv, lv_insulation_thick, duct_thick)
         main_gap_dia = core_dia + dist_core_lv * 2.0 + radial_lv * 2.0 + (2.0 * core_len / math.pi) + main_gap
-        radial_hv = cuda_calculate_radial_thickness_hv(lv_height, lv_turns, hv_thick, hv_len, n_ducts_hv, hv_rate, lv_rate, insulation_wire, hv_insulation_thick, duct_thick)
+        radial_hv = cuda_calculate_radial_thickness_hv(lv_height, lv_turns, hv_thick, hv_len, n_ducts_hv, hv_rate, lv_rate, insulation_wire, hv_insulation_thick, duct_thick, circular)
         reduced_hv = radial_hv / 3.0
         reduced_lv = radial_lv / 3.0
         sd = main_gap_dia + reduced_hv - reduced_lv + ((reduced_hv**2 - reduced_lv**2) / (reduced_lv + reduced_hv + main_gap))
@@ -1078,8 +1983,8 @@ if CUDA_AVAILABLE:
 
     @cuda.jit(device=True)
     def cuda_calculate_ux(power, stray_dia, lv_turns, lv_thick, lv_height, hv_thick, hv_len, freq, lv_rate, n_ducts_lv, n_ducts_hv,
-                          hv_rate, insulation_wire, lv_insulation_thick, hv_insulation_thick, duct_thick, main_gap):
-        radial_hv = cuda_calculate_radial_thickness_hv(lv_height, lv_turns, hv_thick, hv_len, n_ducts_hv, hv_rate, lv_rate, insulation_wire, hv_insulation_thick, duct_thick)
+                          hv_rate, insulation_wire, lv_insulation_thick, hv_insulation_thick, duct_thick, main_gap, circular):
+        radial_hv = cuda_calculate_radial_thickness_hv(lv_height, lv_turns, hv_thick, hv_len, n_ducts_hv, hv_rate, lv_rate, insulation_wire, hv_insulation_thick, duct_thick, circular)
         reduced_hv = radial_hv / 3.0
         radial_lv = cuda_calculate_radial_thickness_lv(lv_turns, lv_thick, n_ducts_lv, lv_insulation_thick, duct_thick)
         reduced_lv = radial_lv / 3.0
@@ -1090,17 +1995,17 @@ if CUDA_AVAILABLE:
     def cuda_calculate_price(lv_turns, lv_height, lv_thick, hv_thick, hv_len, core_dia, core_len, n_ducts_lv, n_ducts_hv,
                               dist_core_lv, main_gap, phase_gap, hv_rate, lv_rate, insulation_wire,
                               lv_insulation_thick, hv_insulation_thick, duct_thick, core_density, core_fill_round, core_fill_rect,
-                              core_price, foil_density, foil_price, wire_density, wire_price):
+                              core_price, foil_density, foil_price, wire_density, wire_price, circular):
         # Core weight and price
         wc = cuda_calculate_core_weight(lv_turns, lv_height, lv_thick, hv_thick, hv_len, core_dia, core_len, n_ducts_lv, n_ducts_hv,
                                          dist_core_lv, main_gap, phase_gap, hv_rate, lv_rate, insulation_wire,
-                                         lv_insulation_thick, hv_insulation_thick, duct_thick, core_density, core_fill_round, core_fill_rect)
+                                         lv_insulation_thick, hv_insulation_thick, duct_thick, core_density, core_fill_round, core_fill_rect, circular)
         pc = wc * core_price
 
         # HV volume and price
         hv_length = cuda_calculate_total_length_hv(lv_turns, lv_thick, core_dia, lv_height, hv_thick, hv_len, core_len, n_ducts_lv, n_ducts_hv,
-                                                    dist_core_lv, main_gap, hv_rate, lv_rate, insulation_wire, lv_insulation_thick, hv_insulation_thick, duct_thick)
-        hv_section = cuda_calculate_section_hv(hv_thick, hv_len)
+                                                    dist_core_lv, main_gap, hv_rate, lv_rate, insulation_wire, lv_insulation_thick, hv_insulation_thick, duct_thick, circular)
+        hv_section = cuda_calculate_section_hv(hv_thick, hv_len, circular)
         volume_hv = (hv_length * hv_section) / 1000000.0 * 3.0
         whv = volume_hv * wire_density
         phv = whv * wire_price
@@ -1121,24 +2026,24 @@ if CUDA_AVAILABLE:
                                         lv_insulation_thick, hv_insulation_thick, duct_thick,
                                         core_density, core_fill_round, core_fill_rect, core_price,
                                         foil_density, foil_price, wire_density, wire_price,
-                                        add_loss_lv, add_loss_hv, penalty_nll, penalty_ll, penalty_ucc, max_gradient):
+                                        add_loss_lv, add_loss_hv, penalty_nll, penalty_ll, penalty_ucc, max_gradient, circular):
         """Calculate price with penalties - simplified version without cooling ducts for GPU."""
         n_ducts_lv = 0.0
         n_ducts_hv = 0.0
 
         # Calculate losses
         ll = cuda_calculate_load_losses(lv_turns, lv_thick, core_dia, lv_height, hv_thick, hv_len, resistivity, power, hv_rate, lv_rate, core_len, n_ducts_lv, n_ducts_hv,
-                                         dist_core_lv, main_gap, insulation_wire, lv_insulation_thick, hv_insulation_thick, duct_thick, add_loss_lv, add_loss_hv)
+                                         dist_core_lv, main_gap, insulation_wire, lv_insulation_thick, hv_insulation_thick, duct_thick, add_loss_lv, add_loss_hv, circular)
 
         nll = cuda_calculate_no_load_losses(lv_turns, lv_height, lv_thick, hv_thick, hv_len, core_dia, lv_rate, core_len, n_ducts_lv, n_ducts_hv,
                                              dist_core_lv, main_gap, phase_gap, hv_rate, insulation_wire,
-                                             lv_insulation_thick, hv_insulation_thick, duct_thick, core_density, core_fill_round, core_fill_rect, freq)
+                                             lv_insulation_thick, hv_insulation_thick, duct_thick, core_density, core_fill_round, core_fill_rect, freq, circular)
 
         # Calculate impedance
         stray_dia = cuda_calculate_stray_diameter(lv_turns, lv_thick, lv_height, hv_thick, hv_len, core_dia, core_len, n_ducts_lv, n_ducts_hv,
-                                                   dist_core_lv, main_gap, hv_rate, lv_rate, insulation_wire, lv_insulation_thick, hv_insulation_thick, duct_thick)
+                                                   dist_core_lv, main_gap, hv_rate, lv_rate, insulation_wire, lv_insulation_thick, hv_insulation_thick, duct_thick, circular)
         ux = cuda_calculate_ux(power, stray_dia, lv_turns, lv_thick, lv_height, hv_thick, hv_len, freq, lv_rate, n_ducts_lv, n_ducts_hv,
-                               hv_rate, insulation_wire, lv_insulation_thick, hv_insulation_thick, duct_thick, main_gap)
+                               hv_rate, insulation_wire, lv_insulation_thick, hv_insulation_thick, duct_thick, main_gap, circular)
         ur = ll / (10.0 * power)
         ucc = math.sqrt(ux**2 + ur**2)
 
@@ -1146,7 +2051,7 @@ if CUDA_AVAILABLE:
         price = cuda_calculate_price(lv_turns, lv_height, lv_thick, hv_thick, hv_len, core_dia, core_len, n_ducts_lv, n_ducts_hv,
                                       dist_core_lv, main_gap, phase_gap, hv_rate, lv_rate, insulation_wire,
                                       lv_insulation_thick, hv_insulation_thick, duct_thick, core_density, core_fill_round, core_fill_rect,
-                                      core_price, foil_density, foil_price, wire_density, wire_price)
+                                      core_price, foil_density, foil_price, wire_density, wire_price, circular)
 
         # Calculate penalties
         nll_extra = max(0.0, nll - guaranteed_nll)
@@ -1223,6 +2128,7 @@ if CUDA_AVAILABLE:
         penalty_ll = params[28]
         penalty_ucc = params[29]
         max_gradient = params[30]
+        circular = params[31] > 0.5  # Convert float to bool
 
         # Quick induction pre-filter
         core_section = cuda_calculate_core_section(core_dia, core_len, core_fill_round, core_fill_rect)
@@ -1234,13 +2140,21 @@ if CUDA_AVAILABLE:
             results[idx, 0] = 1e18
             return
 
-        # Basic validity checks
-        if hvlen < hvthick:
+        # Basic validity checks (for rectangular wire, hvlen must be >= hvthick)
+        # For circular wire, this check is skipped
+        if not circular and hvlen < hvthick:
+            results[idx, 0] = 1e18
+            return
+
+        # Core length must not exceed core diameter
+        if core_len > core_dia:
             results[idx, 0] = 1e18
             return
 
         hv_layer_height = height - 50.0
-        hv_turns_per_layer = (hv_layer_height / (hvlen + insulation_wire)) - 1.0
+        # For circular wire, axial space per turn = diameter (hvthick), for rectangular = hvlen
+        wire_axial_size = hvthick if circular else hvlen
+        hv_turns_per_layer = (hv_layer_height / (wire_axial_size + insulation_wire)) - 1.0
         if hv_turns_per_layer <= 0:
             results[idx, 0] = 1e18
             return
@@ -1254,7 +2168,7 @@ if CUDA_AVAILABLE:
             lv_insulation_thick, hv_insulation_thick, duct_thick,
             core_density, core_fill_round, core_fill_rect, core_price,
             foil_density, foil_price, wire_density, wire_price,
-            add_loss_lv, add_loss_hv, penalty_nll, penalty_ll, penalty_ucc, max_gradient
+            add_loss_lv, add_loss_hv, penalty_nll, penalty_ll, penalty_ucc, max_gradient, circular
         )
 
         # Store results
@@ -1363,16 +2277,23 @@ def StartGPU(tolerance=25, obround=True, put_cooling_ducts=True, print_result=Tr
         PENALTY_LL_FACTOR,                  # 28
         PENALTY_UCC_FACTOR,                 # 29
         MAX_GRADIENT,                       # 30
+        1.0 if HV_WIRE_CIRCULAR else 0.0,   # 31 - circular wire flag
     ], dtype=np.float64)
 
     # Allocate results array
     results = np.zeros((n_combinations, 8), dtype=np.float64)
 
+    # Estimate total time based on throughput (roughly 1M combinations/sec on modern GPU)
+    estimated_throughput = 1000000  # combinations per second estimate
+    estimated_kernel_time = n_combinations / estimated_throughput
+    estimated_total_time = estimated_kernel_time + 2  # Add overhead for transfer
+
     # Transfer to GPU
     print("Transferring data to GPU...")
+    transfer_start = time.time()
     if progress_callback:
         try:
-            progress_callback("CUDA GPU", 0.1, f"Transferring {n_combinations:,} combinations to GPU...", None)
+            progress_callback("CUDA GPU", 0.1, f"Transferring {n_combinations:,} combinations to GPU...", estimated_total_time)
         except (InterruptedError, KeyboardInterrupt):
             raise
         except:
@@ -1381,6 +2302,7 @@ def StartGPU(tolerance=25, obround=True, put_cooling_ducts=True, print_result=Tr
     d_combinations = cuda.to_device(combinations)
     d_results = cuda.to_device(results)
     d_params = cuda.to_device(params)
+    transfer_time = time.time() - transfer_start
 
     # Configure kernel launch
     threads_per_block = 256
@@ -1388,9 +2310,11 @@ def StartGPU(tolerance=25, obround=True, put_cooling_ducts=True, print_result=Tr
 
     print(f"Launching kernel: {blocks_per_grid} blocks x {threads_per_block} threads")
 
+    # Update ETA estimate
+    remaining_eta = max(0, estimated_total_time - transfer_time)
     if progress_callback:
         try:
-            progress_callback("CUDA GPU", 0.3, f"Running CUDA kernel ({n_combinations:,} combinations)...", None)
+            progress_callback("CUDA GPU", 0.3, f"Running CUDA kernel ({n_combinations:,} combinations)...", remaining_eta)
         except (InterruptedError, KeyboardInterrupt):
             raise
         except:
@@ -1405,7 +2329,7 @@ def StartGPU(tolerance=25, obround=True, put_cooling_ducts=True, print_result=Tr
 
     if progress_callback:
         try:
-            progress_callback("CUDA GPU", 0.9, f"Kernel complete in {kernel_time:.1f}s, processing results...", None)
+            progress_callback("CUDA GPU", 0.9, f"Kernel complete in {kernel_time:.1f}s, processing results...", 1)
         except (InterruptedError, KeyboardInterrupt):
             raise
         except:
@@ -1640,7 +2564,7 @@ def _compute_batch_mps(combs, device, tolerance, lv_rate, hv_rate, power, freq, 
                        lv_insulation_thick, hv_insulation_thick, duct_thick,
                        core_density, core_fill_round, core_fill_rect, core_price_val,
                        foil_density, foil_price, wire_density, wire_price,
-                       add_loss_lv, add_loss_hv, penalty_nll, penalty_ll, penalty_ucc):
+                       add_loss_lv, add_loss_hv, penalty_nll, penalty_ll, penalty_ucc, circular=False):
     """Compute prices for a batch of combinations on MPS GPU. Returns (prices, valid_mask)."""
     turns = combs[:, 0]
     height = combs[:, 1]
@@ -1658,7 +2582,9 @@ def _compute_batch_mps(combs, device, tolerance, lv_rate, hv_rate, power, freq, 
     # HV layer calculations
     hv_turns = turns * (hv_rate / lv_rate)
     hv_layer_height = height - 50.0
-    hv_turns_per_layer = torch.clamp((hv_layer_height / (hvlen + insulation_wire)) - 1.0, min=0.001)
+    # For circular wire, axial space per turn = diameter (thickness)
+    wire_axial_size = hvthick if circular else hvlen
+    hv_turns_per_layer = torch.clamp((hv_layer_height / (wire_axial_size + insulation_wire)) - 1.0, min=0.001)
     hv_layer_number = torch.ceil(hv_turns / hv_turns_per_layer)
 
     # Radial thicknesses
@@ -1673,7 +2599,12 @@ def _compute_batch_mps(combs, device, tolerance, lv_rate, hv_rate, power, freq, 
 
     # Sections and resistances
     section_lv = height * thick
-    section_hv = (hvthick * hvlen) - (hvthick**2) + (((hvthick / 2.0)**2) * math.pi)
+    if circular:
+        # Circular wire: area = pi * (diameter/2)^2
+        section_hv = math.pi * (hvthick / 2.0)**2
+    else:
+        # Rectangular wire with rounded corners
+        section_hv = (hvthick * hvlen) - (hvthick**2) + (((hvthick / 2.0)**2) * math.pi)
     resistance_lv = (total_len_lv / 1000.0) * resistivity / section_lv
     resistance_hv = (total_len_hv / 1000.0) * resistivity / section_hv
 
@@ -1715,7 +2646,9 @@ def _compute_batch_mps(combs, device, tolerance, lv_rate, hv_rate, power, freq, 
     total_price = base_price + nll_extra * penalty_nll + ll_extra * penalty_ll + ucc_extra * penalty_ucc
 
     # Validity
-    valid = (induction >= 0.8) & (induction <= 1.95) & (hvlen >= hvthick) & (hv_turns_per_layer > 0) & \
+    # For circular wire, skip the hvlen >= hvthick check (not applicable to round wire)
+    wire_size_valid = torch.ones_like(hvlen, dtype=torch.bool) if circular else (hvlen >= hvthick)
+    valid = (induction >= 0.8) & (induction <= 1.95) & wire_size_valid & (hv_turns_per_layer > 0) & \
             (nll_extra <= guaranteed_nll * tolerance / 100.0) & (ll_extra <= guaranteed_ll * tolerance / 100.0) & \
             (ucc_extra <= guaranteed_ucc * tolerance / 100.0)
 
@@ -1729,7 +2662,7 @@ def _compute_batch_mlx(combs, tolerance, lv_rate, hv_rate, power, freq, resistiv
                        lv_insulation_thick, hv_insulation_thick, duct_thick,
                        core_density, core_fill_round, core_fill_rect, core_price_val,
                        foil_density, foil_price, wire_density, wire_price,
-                       add_loss_lv, add_loss_hv, penalty_nll, penalty_ll, penalty_ucc):
+                       add_loss_lv, add_loss_hv, penalty_nll, penalty_ll, penalty_ucc, circular=False):
     """Compute prices for a batch of combinations on MLX. Returns (prices, combs)."""
     turns = combs[:, 0]
     height = combs[:, 1]
@@ -1747,7 +2680,9 @@ def _compute_batch_mlx(combs, tolerance, lv_rate, hv_rate, power, freq, resistiv
     # HV layer calculations
     hv_turns = turns * (hv_rate / lv_rate)
     hv_layer_height = height - 50.0
-    hv_turns_per_layer = mx.maximum((hv_layer_height / (hvlen + insulation_wire)) - 1.0, 0.001)
+    # For circular wire, axial space per turn = diameter (thickness)
+    wire_axial_size = hvthick if circular else hvlen
+    hv_turns_per_layer = mx.maximum((hv_layer_height / (wire_axial_size + insulation_wire)) - 1.0, 0.001)
     hv_layer_number = mx.ceil(hv_turns / hv_turns_per_layer)
 
     # Radial thicknesses
@@ -1762,7 +2697,12 @@ def _compute_batch_mlx(combs, tolerance, lv_rate, hv_rate, power, freq, resistiv
 
     # Sections and resistances
     section_lv = height * thick
-    section_hv = (hvthick * hvlen) - (hvthick**2) + (((hvthick / 2.0)**2) * math.pi)
+    if circular:
+        # Circular wire: area = pi * (diameter/2)^2
+        section_hv = math.pi * (hvthick / 2.0)**2
+    else:
+        # Rectangular wire with rounded corners
+        section_hv = (hvthick * hvlen) - (hvthick**2) + (((hvthick / 2.0)**2) * math.pi)
     resistance_lv = (total_len_lv / 1000.0) * resistivity / section_lv
     resistance_hv = (total_len_hv / 1000.0) * resistivity / section_hv
 
@@ -1804,7 +2744,9 @@ def _compute_batch_mlx(combs, tolerance, lv_rate, hv_rate, power, freq, resistiv
     total_price = base_price + nll_extra * penalty_nll + ll_extra * penalty_ll + ucc_extra * penalty_ucc
 
     # Validity
-    valid = (induction >= 0.8) & (induction <= 1.95) & (hvlen >= hvthick) & (hv_turns_per_layer > 0) & \
+    # For circular wire, skip the hvlen >= hvthick check (not applicable to round wire)
+    wire_size_valid = mx.ones(hvlen.shape, dtype=mx.bool_) if circular else (hvlen >= hvthick)
+    valid = (induction >= 0.8) & (induction <= 1.95) & wire_size_valid & (hv_turns_per_layer > 0) & \
             (nll_extra <= guaranteed_nll * tolerance / 100.0) & (ll_extra <= guaranteed_ll * tolerance / 100.0) & \
             (ucc_extra <= guaranteed_ucc * tolerance / 100.0)
 
@@ -1868,7 +2810,8 @@ def StartMPS(tolerance=25, obround=True, put_cooling_ducts=True, print_result=Tr
         'foil_price': float(materialToBeUsedFoil_Price), 'wire_density': float(materialToBeUsedWire_Density),
         'wire_price': float(materialToBeUsedWire_Price), 'add_loss_lv': float(AdditionalLossFactorLV),
         'add_loss_hv': float(AdditionalLossFactorHV), 'penalty_nll': float(PENALTY_NLL_FACTOR),
-        'penalty_ll': float(PENALTY_LL_FACTOR), 'penalty_ucc': float(PENALTY_UCC_FACTOR)
+        'penalty_ll': float(PENALTY_LL_FACTOR), 'penalty_ucc': float(PENALTY_UCC_FACTOR),
+        'circular': HV_WIRE_CIRCULAR
     }
 
     # Streaming batch processing - 2M combinations per batch for memory efficiency
@@ -1898,14 +2841,19 @@ def StartMPS(tolerance=25, obround=True, put_cooling_ducts=True, print_result=Tr
             best_price = batch_best_price
             best_params_result = combs[batch_best_idx].cpu().numpy()
 
-        # Progress
+        # Progress with ETA
         pct = 100.0 * n_processed / n_total
-        print(f"  Batch {batch_num}: {n_processed:,}/{n_total:,} ({pct:.1f}%)")
+        elapsed = time.time() - kernel_start
+        if n_processed > 0 and n_processed < n_total:
+            eta = (elapsed / n_processed) * (n_total - n_processed)
+        else:
+            eta = None
+        print(f"  Batch {batch_num}: {n_processed:,}/{n_total:,} ({pct:.1f}%) - ETA: {eta:.1f}s" if eta else f"  Batch {batch_num}: {n_processed:,}/{n_total:,} ({pct:.1f}%)")
 
-        # Call progress callback
+        # Call progress callback with ETA
         if progress_callback:
             try:
-                progress_callback("MPS GPU", pct / 100.0, f"Batch {batch_num}: {n_processed:,}/{n_total:,}", None)
+                progress_callback("MPS GPU", pct / 100.0, f"Batch {batch_num}: {n_processed:,}/{n_total:,}", eta)
             except (InterruptedError, KeyboardInterrupt):
                 raise
             except:
@@ -2038,7 +2986,8 @@ def StartMLX(tolerance=25, obround=True, put_cooling_ducts=True, print_result=Tr
         'foil_price': float(materialToBeUsedFoil_Price), 'wire_density': float(materialToBeUsedWire_Density),
         'wire_price': float(materialToBeUsedWire_Price), 'add_loss_lv': float(AdditionalLossFactorLV),
         'add_loss_hv': float(AdditionalLossFactorHV), 'penalty_nll': float(PENALTY_NLL_FACTOR),
-        'penalty_ll': float(PENALTY_LL_FACTOR), 'penalty_ucc': float(PENALTY_UCC_FACTOR)
+        'penalty_ll': float(PENALTY_LL_FACTOR), 'penalty_ucc': float(PENALTY_UCC_FACTOR),
+        'circular': HV_WIRE_CIRCULAR
     }
 
     # Streaming batch processing - 2M combinations per batch for memory efficiency
@@ -2069,14 +3018,19 @@ def StartMLX(tolerance=25, obround=True, put_cooling_ducts=True, print_result=Tr
             best_price = batch_best_price
             best_params_result = np.array(combs[batch_best_idx].tolist())
 
-        # Progress
+        # Progress with ETA
         pct = 100.0 * n_processed / n_total
-        print(f"  Batch {batch_num}: {n_processed:,}/{n_total:,} ({pct:.1f}%)")
+        elapsed = time.time() - kernel_start
+        if n_processed > 0 and n_processed < n_total:
+            eta = (elapsed / n_processed) * (n_total - n_processed)
+        else:
+            eta = None
+        print(f"  Batch {batch_num}: {n_processed:,}/{n_total:,} ({pct:.1f}%) - ETA: {eta:.1f}s" if eta else f"  Batch {batch_num}: {n_processed:,}/{n_total:,} ({pct:.1f}%)")
 
-        # Call progress callback
+        # Call progress callback with ETA
         if progress_callback:
             try:
-                progress_callback("MLX GPU", pct / 100.0, f"Batch {batch_num}: {n_processed:,}/{n_total:,}", None)
+                progress_callback("MLX GPU", pct / 100.0, f"Batch {batch_num}: {n_processed:,}/{n_total:,}", eta)
             except (InterruptedError, KeyboardInterrupt):
                 raise
             except:
@@ -2198,16 +3152,18 @@ def StartMPSHybrid(tolerance=25, obround=True, put_cooling_ducts=True, print_res
         # ~2-5min - detailed search
         coarse_steps = {'core_dia': 20, 'core_len': 5, 'turns': 3, 'height': 30, 'thick': 0.3, 'hvthick': 0.3, 'hvlen': 0.8}
         fine_steps = {'core_dia': 4, 'turns': 1, 'height': 8, 'thick': 0.04, 'hvthick': 0.04, 'hvlen': 0.08}
-        local_ranges = {'turns': 4, 'height': 40, 'thick': 0.4, 'hvthick': 0.4, 'hvlen': 1.5, 'core_dia': 20, 'core_len': 30}
-        local_steps = {'height': 5, 'thick': 0.03, 'hvthick': 0.03, 'hvlen': 0.08, 'core_dia': 3, 'core_len': 5}
+        # Stage 3 local search - keep combinations manageable (~3-5M max)
+        local_ranges = {'turns': 3, 'height': 30, 'thick': 0.3, 'hvthick': 0.3, 'hvlen': 1.0, 'core_dia': 15, 'core_len': 20}
+        local_steps = {'height': 8, 'thick': 0.08, 'hvthick': 0.08, 'hvlen': 0.15, 'core_dia': 4, 'core_len': 6}
         n_regions = 5
         fine_core_len_steps = 12
     elif search_depth == 'exhaustive':
         # ~10-30min - maximum precision
         coarse_steps = {'core_dia': 15, 'core_len': 6, 'turns': 2, 'height': 25, 'thick': 0.25, 'hvthick': 0.25, 'hvlen': 0.6}
         fine_steps = {'core_dia': 2, 'turns': 1, 'height': 5, 'thick': 0.02, 'hvthick': 0.02, 'hvlen': 0.05}
-        local_ranges = {'turns': 5, 'height': 50, 'thick': 0.5, 'hvthick': 0.5, 'hvlen': 2.0, 'core_dia': 25, 'core_len': 40}
-        local_steps = {'height': 3, 'thick': 0.02, 'hvthick': 0.02, 'hvlen': 0.05, 'core_dia': 2, 'core_len': 3}
+        # Stage 3 local search - keep combinations manageable (~5-10M max)
+        local_ranges = {'turns': 4, 'height': 40, 'thick': 0.4, 'hvthick': 0.4, 'hvlen': 1.5, 'core_dia': 20, 'core_len': 30}
+        local_steps = {'height': 6, 'thick': 0.06, 'hvthick': 0.06, 'hvlen': 0.12, 'core_dia': 4, 'core_len': 6}
         n_regions = 7
         fine_core_len_steps = 15
     else:  # normal (default)
@@ -2270,13 +3226,16 @@ def StartMPSHybrid(tolerance=25, obround=True, put_cooling_ducts=True, print_res
         'foil_price': float(materialToBeUsedFoil_Price), 'wire_density': float(materialToBeUsedWire_Density),
         'wire_price': float(materialToBeUsedWire_Price), 'add_loss_lv': float(AdditionalLossFactorLV),
         'add_loss_hv': float(AdditionalLossFactorHV), 'penalty_nll': float(PENALTY_NLL_FACTOR),
-        'penalty_ll': float(PENALTY_LL_FACTOR), 'penalty_ucc': float(PENALTY_UCC_FACTOR)
+        'penalty_ll': float(PENALTY_LL_FACTOR), 'penalty_ucc': float(PENALTY_UCC_FACTOR),
+        'circular': HV_WIRE_CIRCULAR
     }
 
     # Collect all coarse results with prices
     all_prices = []
     all_params = []
 
+    stage1_batch_start = time.time()
+    stage1_processed = 0
     for batch in _generate_batches_streaming(core_dias, turns_arr, heights, thicks, hvthicks, hvlens, core_len_steps, obround, batch_size=2_000_000):
         combs = torch.tensor(batch, device=device)
         prices, _ = _compute_batch_mps(combs, device, **params)
@@ -2288,6 +3247,16 @@ def StartMPSHybrid(tolerance=25, obround=True, put_cooling_ducts=True, print_res
 
         all_prices.extend(valid_prices.tolist())
         all_params.extend(valid_combs.tolist())
+
+        # Progress with ETA for Stage 1
+        stage1_processed += len(batch)
+        stage1_pct = min(stage1_processed / n_coarse, 0.99) if n_coarse > 0 else 0.99
+        stage1_elapsed = time.time() - stage1_batch_start
+        if stage1_processed > 0 and stage1_processed < n_coarse:
+            stage1_eta = (stage1_elapsed / stage1_processed) * (n_coarse - stage1_processed)
+        else:
+            stage1_eta = None
+        report_progress(1, 0.01 + stage1_pct * 0.32, f"Stage 1: {stage1_processed:,}/{n_coarse:,}", stage1_eta)
 
         del combs, prices, batch
 
@@ -2335,6 +3304,11 @@ def StartMPSHybrid(tolerance=25, obround=True, put_cooling_ducts=True, print_res
     best_overall_price = 1e18
     best_overall_params = None
 
+    # Track Stage 2 progress with ETA
+    stage2_batch_start = time.time()
+    stage2_total_processed = 0
+    stage2_total_estimated = 0  # Will be estimated as we go
+
     for i, candidate in enumerate(top_candidates):
         cand_turns, cand_height, cand_thick, cand_hvthick, cand_hvlen, cand_core_dia, cand_core_len = candidate
 
@@ -2363,12 +3337,13 @@ def StartMPSHybrid(tolerance=25, obround=True, put_cooling_ducts=True, print_res
         n_fine = _estimate_total_combinations(fine_core_dias, fine_turns, fine_heights, fine_thicks, fine_hvthicks, fine_hvlens, fine_core_len_steps, obround)
         print(f"  Region {i+1}: {n_fine:,} combinations around core_dia={cand_core_dia:.0f}, turns={cand_turns:.0f}")
 
-        # Progress for this region
-        region_progress = 0.34 + (0.33 * (i / len(top_candidates)))
-        report_progress(2, region_progress, f"Stage 2: Region {i+1}/{len(top_candidates)}", None)
+        # Estimate total for all regions (assume similar size per region)
+        if i == 0:
+            stage2_total_estimated = n_fine * len(top_candidates)
 
         region_best_price = 1e18
         region_best_params = None
+        region_processed = 0
 
         for batch in _generate_batches_streaming(fine_core_dias, fine_turns, fine_heights, fine_thicks, fine_hvthicks, fine_hvlens, fine_core_len_steps, obround, batch_size=2_000_000):
             combs = torch.tensor(batch, device=device)
@@ -2380,6 +3355,22 @@ def StartMPSHybrid(tolerance=25, obround=True, put_cooling_ducts=True, print_res
             if best_price < region_best_price:
                 region_best_price = best_price
                 region_best_params = combs[best_idx].cpu().numpy()
+
+            # Update progress with ETA
+            region_processed += len(batch)
+            stage2_total_processed += len(batch)
+            stage2_elapsed = time.time() - stage2_batch_start
+            if stage2_total_processed > 0 and stage2_total_estimated > 0:
+                stage2_pct = min(stage2_total_processed / stage2_total_estimated, 0.99)
+                if stage2_total_processed < stage2_total_estimated:
+                    stage2_eta = (stage2_elapsed / stage2_total_processed) * (stage2_total_estimated - stage2_total_processed)
+                else:
+                    stage2_eta = None
+            else:
+                stage2_pct = (i / len(top_candidates)) if len(top_candidates) > 0 else 0
+                stage2_eta = None
+            region_progress = 0.34 + stage2_pct * 0.33
+            report_progress(2, region_progress, f"Stage 2: Region {i+1}/{len(top_candidates)}, {stage2_total_processed:,} processed", stage2_eta)
 
             del combs, prices, batch
 
@@ -2442,52 +3433,103 @@ def StartMPSHybrid(tolerance=25, obround=True, put_cooling_ducts=True, print_res
     n_local = len(turns_range) * len(height_range) * len(thick_range) * len(hvthick_range) * len(hvlen_range) * len(core_dia_range) * len(core_len_range)
     print(f"  Local search: {n_local:,} combinations (with cooling ducts)")
 
-    eval_count = 0
-    last_progress_report = 0
     stage3_start = time.time()
 
-    for cd in core_dia_range:
-        for cl in core_len_range:
-            for t in turns_range:
-                for h in height_range:
-                    for th in thick_range:
-                        for hvth in hvthick_range:
-                            for hvl in hvlen_range:
-                                if hvl < hvth:
-                                    continue
-                                eval_count += 1
+    # Use streaming for large searches (>10M combinations) to avoid memory issues
+    if n_local > 10_000_000:
+        print(f"  Using STREAMING mode (memory-efficient for large searches)")
+        report_progress(3, 0.68, f"Stage 3: Streaming {n_local:,} combinations...", n_local / 50000)
 
-                                # Report progress every 5000 evaluations
-                                if eval_count - last_progress_report >= 5000:
-                                    last_progress_report = eval_count
-                                    stage3_progress = 0.68 + (0.30 * eval_count / max(n_local, 1))
-                                    elapsed = time.time() - stage3_start
-                                    if eval_count > 0:
-                                        eta = (elapsed / eval_count) * (n_local - eval_count)
-                                    else:
-                                        eta = None
-                                    report_progress(3, stage3_progress, f"Stage 3: {eval_count:,}/{n_local:,} ({100*eval_count/max(n_local,1):.1f}%)", eta)
+        best_result = streaming_local_refinement(
+            turns_range, height_range, thick_range, hvthick_range, hvlen_range,
+            core_dia_range, core_len_range,
+            LVRATE, HVRATE, POWERRATING, FREQUENCY,
+            materialToBeUsedWire_Resistivity,
+            GUARANTEED_NO_LOAD_LOSS, GUARANTEED_LOAD_LOSS, GUARANTEED_UCC,
+            tolerance, put_cooling_ducts, HV_WIRE_CIRCULAR,
+            progress_callback=progress_callback,
+            chunk_size=100000
+        )
 
-                                # Evaluate WITH cooling ducts using CPU function
-                                price = CalculateFinalizedPriceIntolerant_Optimized(
-                                    t, h, th, hvth, hvl, cd, cl,
-                                    LVRATE, HVRATE, POWERRATING, FREQUENCY,
-                                    materialToBeUsedWire_Resistivity,
-                                    GUARANTEED_NO_LOAD_LOSS, GUARANTEED_LOAD_LOSS, GUARANTEED_UCC,
-                                    tolerance, False, put_cooling_ducts
-                                )
+        if best_result is not None and best_result[0] < best_price:
+            best_price = best_result[0]
+            best_turns = best_result[1]
+            best_height = best_result[2]
+            best_thick = best_result[3]
+            best_hvthick = best_result[4]
+            best_hvlen = best_result[5]
+            best_core_dia = best_result[6]
+            best_core_len = best_result[7]
+    else:
+        print(f"  Using BATCH mode (fast for smaller searches)")
+        report_progress(3, 0.68, f"Stage 3: Processing {n_local:,} combinations...", None)
 
-                                if 0 < price < best_price:
-                                    best_price = price
-                                    best_turns = t
-                                    best_height = h
-                                    best_thick = th
-                                    best_hvthick = hvth
-                                    best_hvlen = hvl
-                                    best_core_dia = cd
-                                    best_core_len = cl
+        # Generate all combinations as flattened arrays (OK for <10M combinations)
+        turns_arr, height_arr, thick_arr, hvthick_arr, hvlen_arr, core_dia_arr, core_len_arr = \
+            generate_local_combinations(turns_range, height_range, thick_range,
+                                         hvthick_range, hvlen_range,
+                                         core_dia_range, core_len_range)
+
+        # Run parallel kernel with progress reporting
+        results = parallel_local_refinement_with_progress(
+            turns_arr, height_arr, thick_arr, hvthick_arr, hvlen_arr,
+            core_dia_arr, core_len_arr,
+            LVRATE, HVRATE, POWERRATING, FREQUENCY,
+            materialToBeUsedWire_Resistivity,
+            GUARANTEED_NO_LOAD_LOSS, GUARANTEED_LOAD_LOSS, GUARANTEED_UCC,
+            tolerance, put_cooling_ducts, HV_WIRE_CIRCULAR,
+            progress_callback=progress_callback,
+            batch_size=2000
+        )
+
+        # Find best result (price is in column 0)
+        valid_mask = (results[:, 0] > 0) & (results[:, 0] < 1e17)
+        if np.any(valid_mask):
+            valid_results = results[valid_mask]
+            best_idx = np.argmin(valid_results[:, 0])
+            best_result = valid_results[best_idx]
+
+            if best_result[0] < best_price:
+                best_price = best_result[0]
+                best_turns = best_result[1]
+                best_height = best_result[2]
+                best_thick = best_result[3]
+                best_hvthick = best_result[4]
+                best_hvlen = best_result[5]
+                best_core_dia = best_result[6]
+                best_core_len = best_result[7]
+
+    stage3_grid_time = time.time() - total_start - stage1_time - stage2_time
+    print(f"  Stage 3 grid search completed in {stage3_grid_time:.1f}s")
+
+    # Phase 2: Ensemble optimizer polish for maximum precision
+    if best_price < 1e17:
+        print(f"\n  [STAGE 3b] Ensemble optimizer polish...")
+        print(f"  Starting from grid best: price={best_price:.2f}")
+        report_progress(3, 0.92, "Stage 3: Ensemble optimization...", 60)
+
+        polished_params, polished_price, winning_method = ensemble_optimize(
+            [best_turns, best_height, best_thick, best_hvthick, best_hvlen, best_core_dia, best_core_len],
+            tolerance, put_cooling_ducts,
+            progress_callback
+        )
+
+        if polished_price < best_price:
+            improvement = best_price - polished_price
+            print(f"  {winning_method} improved price by {improvement:.2f} (new: {polished_price:.2f})")
+            best_price = polished_price
+            best_turns = int(round(polished_params[0]))
+            best_height = polished_params[1]
+            best_thick = polished_params[2]
+            best_hvthick = polished_params[3]
+            best_hvlen = polished_params[4]
+            best_core_dia = polished_params[5]
+            best_core_len = polished_params[6]
+        else:
+            print(f"  Grid result was already optimal")
 
     stage3_time = time.time() - total_start - stage1_time - stage2_time
+    print(f"  Stage 3 total time: {stage3_time:.1f}s")
 
     if best_price >= 1e17:
         print(f"  No valid design found in local search!")
@@ -2504,12 +3546,12 @@ def StartMPSHybrid(tolerance=25, obround=True, put_cooling_ducts=True, print_res
             best_core_dia, best_core_len,
             LVRATE, HVRATE, POWERRATING, FREQUENCY, materialToBeUsedWire_Resistivity,
             GUARANTEED_NO_LOAD_LOSS, GUARANTEED_LOAD_LOSS, GUARANTEED_UCC,
-            tolerance, False, put_cooling_ducts
+            tolerance, False, put_cooling_ducts, circular=HV_WIRE_CIRCULAR
         )
         if best_price < 0:
             best_price = abs(best_price)
     else:
-        print(f"  Evaluated {eval_count:,} designs, best price: {best_price:.2f}")
+        print(f"  Evaluated {n_local:,} designs, best price: {best_price:.2f}")
 
     total_time = time.time() - total_start
     report_progress(3, 1.0, f"Complete! Best price: {best_price:.2f}", None)
@@ -2521,14 +3563,18 @@ def StartMPSHybrid(tolerance=25, obround=True, put_cooling_ducts=True, print_res
         CalculateFinalizedPrice(best_turns, best_height, best_thick, best_hvthick, best_hvlen,
                                 best_core_dia, best_core_len, LVRATE, HVRATE, POWERRATING, FREQUENCY,
                                 materialToBeUsedWire_Resistivity, GUARANTEED_NO_LOAD_LOSS,
-                                GUARANTEED_LOAD_LOSS, GUARANTEED_UCC, isFinal=True, PutCoolingDucts=put_cooling_ducts)
+                                GUARANTEED_LOAD_LOSS, GUARANTEED_UCC, isFinal=True, PutCoolingDucts=put_cooling_ducts,
+                                circular=HV_WIRE_CIRCULAR)
         print(f"\nCore Diameter: {best_core_dia:.1f} mm")
         print(f"Core Length: {best_core_len:.1f} mm")
         print(f"LV Turns: {best_turns:.0f}")
         print(f"LV Foil Height: {best_height:.1f} mm")
         print(f"LV Foil Thickness: {best_thick:.2f} mm")
-        print(f"HV Wire Thickness: {best_hvthick:.2f} mm")
-        print(f"HV Wire Length: {best_hvlen:.2f} mm")
+        if HV_WIRE_CIRCULAR:
+            print(f"HV Wire Diameter: {best_hvthick:.2f} mm")
+        else:
+            print(f"HV Wire Thickness: {best_hvthick:.2f} mm")
+            print(f"HV Wire Length: {best_hvlen:.2f} mm")
         print(f"\nTotal optimization time: {total_time:.1f}s")
         print(f"  Stage 1 (coarse GPU): {stage1_time:.1f}s")
         print(f"  Stage 2 (fine GPU): {stage2_time:.1f}s")
@@ -2580,15 +3626,17 @@ def StartCUDAHybrid(tolerance=25, obround=True, put_cooling_ducts=True, print_re
     elif search_depth == 'thorough':
         coarse_steps = {'core_dia': 20, 'core_len': 5, 'turns': 3, 'height': 30, 'thick': 0.3, 'hvthick': 0.3, 'hvlen': 0.8}
         fine_steps = {'core_dia': 4, 'turns': 1, 'height': 8, 'thick': 0.04, 'hvthick': 0.04, 'hvlen': 0.08}
-        local_ranges = {'turns': 4, 'height': 40, 'thick': 0.4, 'hvthick': 0.4, 'hvlen': 1.5, 'core_dia': 20, 'core_len': 30}
-        local_steps = {'height': 5, 'thick': 0.03, 'hvthick': 0.03, 'hvlen': 0.08, 'core_dia': 3, 'core_len': 5}
+        # Stage 3 local search - keep combinations manageable (~3-5M max)
+        local_ranges = {'turns': 3, 'height': 30, 'thick': 0.3, 'hvthick': 0.3, 'hvlen': 1.0, 'core_dia': 15, 'core_len': 20}
+        local_steps = {'height': 8, 'thick': 0.08, 'hvthick': 0.08, 'hvlen': 0.15, 'core_dia': 4, 'core_len': 6}
         n_regions = 5
         fine_core_len_steps = 12
     elif search_depth == 'exhaustive':
         coarse_steps = {'core_dia': 15, 'core_len': 6, 'turns': 2, 'height': 25, 'thick': 0.25, 'hvthick': 0.25, 'hvlen': 0.6}
         fine_steps = {'core_dia': 2, 'turns': 1, 'height': 5, 'thick': 0.02, 'hvthick': 0.02, 'hvlen': 0.05}
-        local_ranges = {'turns': 5, 'height': 50, 'thick': 0.5, 'hvthick': 0.5, 'hvlen': 2.0, 'core_dia': 25, 'core_len': 40}
-        local_steps = {'height': 3, 'thick': 0.02, 'hvthick': 0.02, 'hvlen': 0.05, 'core_dia': 2, 'core_len': 3}
+        # Stage 3 local search - keep combinations manageable (~5-10M max)
+        local_ranges = {'turns': 4, 'height': 40, 'thick': 0.4, 'hvthick': 0.4, 'hvlen': 1.5, 'core_dia': 20, 'core_len': 30}
+        local_steps = {'height': 6, 'thick': 0.06, 'hvthick': 0.06, 'hvlen': 0.12, 'core_dia': 4, 'core_len': 6}
         n_regions = 7
         fine_core_len_steps = 15
     else:  # normal
@@ -2647,12 +3695,15 @@ def StartCUDAHybrid(tolerance=25, obround=True, put_cooling_ducts=True, print_re
         'foil_price': float(materialToBeUsedFoil_Price), 'wire_density': float(materialToBeUsedWire_Density),
         'wire_price': float(materialToBeUsedWire_Price), 'add_loss_lv': float(AdditionalLossFactorLV),
         'add_loss_hv': float(AdditionalLossFactorHV), 'penalty_nll': float(PENALTY_NLL_FACTOR),
-        'penalty_ll': float(PENALTY_LL_FACTOR), 'penalty_ucc': float(PENALTY_UCC_FACTOR)
+        'penalty_ll': float(PENALTY_LL_FACTOR), 'penalty_ucc': float(PENALTY_UCC_FACTOR),
+        'circular': HV_WIRE_CIRCULAR
     }
 
     all_prices = []
     all_params = []
 
+    stage1_batch_start = time.time()
+    stage1_processed = 0
     for batch in _generate_batches_streaming(core_dias, turns_arr, heights, thicks, hvthicks, hvlens, core_len_steps, obround, batch_size=2_000_000):
         combs = torch.tensor(batch, device=device)
         prices, _ = _compute_batch_mps(combs, device, **params)  # Works on CUDA too
@@ -2663,6 +3714,16 @@ def StartCUDAHybrid(tolerance=25, obround=True, put_cooling_ducts=True, print_re
 
         all_prices.extend(valid_prices.tolist())
         all_params.extend(valid_combs.tolist())
+
+        # Progress with ETA for Stage 1
+        stage1_processed += len(batch)
+        stage1_pct = min(stage1_processed / n_coarse, 0.99) if n_coarse > 0 else 0.99
+        stage1_elapsed = time.time() - stage1_batch_start
+        if stage1_processed > 0 and stage1_processed < n_coarse:
+            stage1_eta = (stage1_elapsed / stage1_processed) * (n_coarse - stage1_processed)
+        else:
+            stage1_eta = None
+        report_progress(1, 0.01 + stage1_pct * 0.32, f"Stage 1: {stage1_processed:,}/{n_coarse:,}", stage1_eta)
 
         del combs, prices, batch
         torch.cuda.empty_cache()
@@ -2701,6 +3762,11 @@ def StartCUDAHybrid(tolerance=25, obround=True, put_cooling_ducts=True, print_re
     best_overall_price = 1e18
     best_overall_params = None
 
+    # Track Stage 2 progress with ETA
+    stage2_batch_start = time.time()
+    stage2_total_processed = 0
+    stage2_total_estimated = 0
+
     for i, candidate in enumerate(top_candidates):
         cand_turns, cand_height, cand_thick, cand_hvthick, cand_hvlen, cand_core_dia, cand_core_len = candidate
 
@@ -2727,11 +3793,13 @@ def StartCUDAHybrid(tolerance=25, obround=True, put_cooling_ducts=True, print_re
         n_fine = _estimate_total_combinations(fine_core_dias, fine_turns, fine_heights, fine_thicks, fine_hvthicks, fine_hvlens, fine_core_len_steps, obround)
         print(f"  Region {i+1}: {n_fine:,} combinations around core_dia={cand_core_dia:.0f}, turns={cand_turns:.0f}")
 
-        region_progress = 0.34 + (0.33 * (i / len(top_candidates)))
-        report_progress(2, region_progress, f"Stage 2: Region {i+1}/{len(top_candidates)}", None)
+        # Estimate total for all regions (assume similar size per region)
+        if i == 0:
+            stage2_total_estimated = n_fine * len(top_candidates)
 
         region_best_price = 1e18
         region_best_params = None
+        region_processed = 0
 
         for batch in _generate_batches_streaming(fine_core_dias, fine_turns, fine_heights, fine_thicks, fine_hvthicks, fine_hvlens, fine_core_len_steps, obround, batch_size=2_000_000):
             combs = torch.tensor(batch, device=device)
@@ -2743,6 +3811,22 @@ def StartCUDAHybrid(tolerance=25, obround=True, put_cooling_ducts=True, print_re
             if best_price < region_best_price:
                 region_best_price = best_price
                 region_best_params = combs[best_idx].cpu().numpy()
+
+            # Update progress with ETA
+            region_processed += len(batch)
+            stage2_total_processed += len(batch)
+            stage2_elapsed = time.time() - stage2_batch_start
+            if stage2_total_processed > 0 and stage2_total_estimated > 0:
+                stage2_pct = min(stage2_total_processed / stage2_total_estimated, 0.99)
+                if stage2_total_processed < stage2_total_estimated:
+                    stage2_eta = (stage2_elapsed / stage2_total_processed) * (stage2_total_estimated - stage2_total_processed)
+                else:
+                    stage2_eta = None
+            else:
+                stage2_pct = (i / len(top_candidates)) if len(top_candidates) > 0 else 0
+                stage2_eta = None
+            region_progress = 0.34 + stage2_pct * 0.33
+            report_progress(2, region_progress, f"Stage 2: Region {i+1}/{len(top_candidates)}, {stage2_total_processed:,} processed", stage2_eta)
 
             del combs, prices, batch
             torch.cuda.empty_cache()
@@ -2800,47 +3884,103 @@ def StartCUDAHybrid(tolerance=25, obround=True, put_cooling_ducts=True, print_re
     n_local = len(turns_range) * len(height_range) * len(thick_range) * len(hvthick_range) * len(hvlen_range) * len(core_dia_range) * len(core_len_range)
     print(f"  Local search: {n_local:,} combinations (with cooling ducts)")
 
-    eval_count = 0
-    last_progress_report = 0
     stage3_start = time.time()
 
-    for cd in core_dia_range:
-        for cl in core_len_range:
-            for t in turns_range:
-                for h in height_range:
-                    for th in thick_range:
-                        for hvth in hvthick_range:
-                            for hvl in hvlen_range:
-                                if hvl < hvth:
-                                    continue
-                                eval_count += 1
+    # Use streaming for large searches (>10M combinations) to avoid memory issues
+    if n_local > 10_000_000:
+        print(f"  Using STREAMING mode (memory-efficient for large searches)")
+        report_progress(3, 0.68, f"Stage 3: Streaming {n_local:,} combinations...", n_local / 50000)
 
-                                if eval_count - last_progress_report >= 5000:
-                                    last_progress_report = eval_count
-                                    stage3_progress = 0.68 + (0.30 * eval_count / max(n_local, 1))
-                                    elapsed = time.time() - stage3_start
-                                    eta = (elapsed / eval_count) * (n_local - eval_count) if eval_count > 0 else None
-                                    report_progress(3, stage3_progress, f"Stage 3: {eval_count:,}/{n_local:,}", eta)
+        best_result = streaming_local_refinement(
+            turns_range, height_range, thick_range, hvthick_range, hvlen_range,
+            core_dia_range, core_len_range,
+            LVRATE, HVRATE, POWERRATING, FREQUENCY,
+            materialToBeUsedWire_Resistivity,
+            GUARANTEED_NO_LOAD_LOSS, GUARANTEED_LOAD_LOSS, GUARANTEED_UCC,
+            tolerance, put_cooling_ducts, HV_WIRE_CIRCULAR,
+            progress_callback=progress_callback,
+            chunk_size=100000
+        )
 
-                                price = CalculateFinalizedPriceIntolerant_Optimized(
-                                    t, h, th, hvth, hvl, cd, cl,
-                                    LVRATE, HVRATE, POWERRATING, FREQUENCY,
-                                    materialToBeUsedWire_Resistivity,
-                                    GUARANTEED_NO_LOAD_LOSS, GUARANTEED_LOAD_LOSS, GUARANTEED_UCC,
-                                    tolerance, False, put_cooling_ducts
-                                )
+        if best_result is not None and best_result[0] < best_price:
+            best_price = best_result[0]
+            best_turns = best_result[1]
+            best_height = best_result[2]
+            best_thick = best_result[3]
+            best_hvthick = best_result[4]
+            best_hvlen = best_result[5]
+            best_core_dia = best_result[6]
+            best_core_len = best_result[7]
+    else:
+        print(f"  Using BATCH mode (fast for smaller searches)")
+        report_progress(3, 0.68, f"Stage 3: Processing {n_local:,} combinations...", None)
 
-                                if 0 < price < best_price:
-                                    best_price = price
-                                    best_turns = t
-                                    best_height = h
-                                    best_thick = th
-                                    best_hvthick = hvth
-                                    best_hvlen = hvl
-                                    best_core_dia = cd
-                                    best_core_len = cl
+        # Generate all combinations as flattened arrays (OK for <10M combinations)
+        turns_arr, height_arr, thick_arr, hvthick_arr, hvlen_arr, core_dia_arr, core_len_arr = \
+            generate_local_combinations(turns_range, height_range, thick_range,
+                                         hvthick_range, hvlen_range,
+                                         core_dia_range, core_len_range)
+
+        # Run parallel kernel with progress reporting
+        results = parallel_local_refinement_with_progress(
+            turns_arr, height_arr, thick_arr, hvthick_arr, hvlen_arr,
+            core_dia_arr, core_len_arr,
+            LVRATE, HVRATE, POWERRATING, FREQUENCY,
+            materialToBeUsedWire_Resistivity,
+            GUARANTEED_NO_LOAD_LOSS, GUARANTEED_LOAD_LOSS, GUARANTEED_UCC,
+            tolerance, put_cooling_ducts, HV_WIRE_CIRCULAR,
+            progress_callback=progress_callback,
+            batch_size=2000
+        )
+
+        # Find best result (price is in column 0)
+        valid_mask = (results[:, 0] > 0) & (results[:, 0] < 1e17)
+        if np.any(valid_mask):
+            valid_results = results[valid_mask]
+            best_idx = np.argmin(valid_results[:, 0])
+            best_result = valid_results[best_idx]
+
+            if best_result[0] < best_price:
+                best_price = best_result[0]
+                best_turns = best_result[1]
+                best_height = best_result[2]
+                best_thick = best_result[3]
+                best_hvthick = best_result[4]
+                best_hvlen = best_result[5]
+                best_core_dia = best_result[6]
+                best_core_len = best_result[7]
+
+    stage3_grid_time = time.time() - total_start - stage1_time - stage2_time
+    print(f"  Stage 3 grid search completed in {stage3_grid_time:.1f}s")
+
+    # Phase 2: Ensemble optimizer polish for maximum precision
+    if best_price < 1e17:
+        print(f"\n  [STAGE 3b] Ensemble optimizer polish...")
+        print(f"  Starting from grid best: price={best_price:.2f}")
+        report_progress(3, 0.92, "Stage 3: Ensemble optimization...", 60)
+
+        polished_params, polished_price, winning_method = ensemble_optimize(
+            [best_turns, best_height, best_thick, best_hvthick, best_hvlen, best_core_dia, best_core_len],
+            tolerance, put_cooling_ducts,
+            progress_callback
+        )
+
+        if polished_price < best_price:
+            improvement = best_price - polished_price
+            print(f"  {winning_method} improved price by {improvement:.2f} (new: {polished_price:.2f})")
+            best_price = polished_price
+            best_turns = int(round(polished_params[0]))
+            best_height = polished_params[1]
+            best_thick = polished_params[2]
+            best_hvthick = polished_params[3]
+            best_hvlen = polished_params[4]
+            best_core_dia = polished_params[5]
+            best_core_len = polished_params[6]
+        else:
+            print(f"  Grid result was already optimal")
 
     stage3_time = time.time() - total_start - stage1_time - stage2_time
+    print(f"  Stage 3 total time: {stage3_time:.1f}s")
 
     if best_price >= 1e17:
         print(f"  No valid design found in local search!")
@@ -2852,12 +3992,12 @@ def StartCUDAHybrid(tolerance=25, obround=True, put_cooling_ducts=True, print_re
             best_core_dia, best_core_len,
             LVRATE, HVRATE, POWERRATING, FREQUENCY, materialToBeUsedWire_Resistivity,
             GUARANTEED_NO_LOAD_LOSS, GUARANTEED_LOAD_LOSS, GUARANTEED_UCC,
-            tolerance, False, put_cooling_ducts
+            tolerance, False, put_cooling_ducts, circular=HV_WIRE_CIRCULAR
         )
         if best_price < 0:
             best_price = abs(best_price)
     else:
-        print(f"  Evaluated {eval_count:,} designs, best price: {best_price:.2f}")
+        print(f"  Evaluated {n_local:,} designs, best price: {best_price:.2f}")
 
     total_time = time.time() - total_start
     report_progress(3, 1.0, f"Complete! Best price: {best_price:.2f}", None)
@@ -2869,14 +4009,18 @@ def StartCUDAHybrid(tolerance=25, obround=True, put_cooling_ducts=True, print_re
         CalculateFinalizedPrice(best_turns, best_height, best_thick, best_hvthick, best_hvlen,
                                 best_core_dia, best_core_len, LVRATE, HVRATE, POWERRATING, FREQUENCY,
                                 materialToBeUsedWire_Resistivity, GUARANTEED_NO_LOAD_LOSS,
-                                GUARANTEED_LOAD_LOSS, GUARANTEED_UCC, isFinal=True, PutCoolingDucts=put_cooling_ducts)
+                                GUARANTEED_LOAD_LOSS, GUARANTEED_UCC, isFinal=True, PutCoolingDucts=put_cooling_ducts,
+                                circular=HV_WIRE_CIRCULAR)
         print(f"\nCore Diameter: {best_core_dia:.1f} mm")
         print(f"Core Length: {best_core_len:.1f} mm")
         print(f"LV Turns: {best_turns:.0f}")
         print(f"LV Foil Height: {best_height:.1f} mm")
         print(f"LV Foil Thickness: {best_thick:.2f} mm")
-        print(f"HV Wire Thickness: {best_hvthick:.2f} mm")
-        print(f"HV Wire Length: {best_hvlen:.2f} mm")
+        if HV_WIRE_CIRCULAR:
+            print(f"HV Wire Diameter: {best_hvthick:.2f} mm")
+        else:
+            print(f"HV Wire Thickness: {best_hvthick:.2f} mm")
+            print(f"HV Wire Length: {best_hvlen:.2f} mm")
         print(f"\nTotal optimization time: {total_time:.1f}s")
         print(f"  Stage 1 (coarse CUDA): {stage1_time:.1f}s")
         print(f"  Stage 2 (fine CUDA): {stage2_time:.1f}s")
@@ -3008,7 +4152,7 @@ def StartOptimized(tolerance=25, obround=True, put_cooling_ducts=True, print_res
 
         batch_results = parallel_grid_search_kernel(
             batch_core_dias, core_lens, turns, heights, thicks, hvthicks, hvlens,
-            float(tolerance), obround, put_cooling_ducts,
+            float(tolerance), obround, put_cooling_ducts, HV_WIRE_CIRCULAR,
             LVRATE, HVRATE, POWERRATING, FREQUENCY, materialToBeUsedWire_Resistivity,
             GUARANTEED_NO_LOAD_LOSS, GUARANTEED_LOAD_LOSS, GUARANTEED_UCC,
             CoreFillingFactorRound, CoreFillingFactorRectangular, INSULATION_THICKNESS_WIRE
@@ -3088,14 +4232,15 @@ def StartOptimized(tolerance=25, obround=True, put_cooling_ducts=True, print_res
             int(best[1]), best[2], best[3], best[4], best[5], best[6], best[7],
             LVRATE, HVRATE, POWERRATING, FREQUENCY, materialToBeUsedWire_Resistivity,
             GUARANTEED_NO_LOAD_LOSS, GUARANTEED_LOAD_LOSS, GUARANTEED_UCC,
-            isFinal=True, PutCoolingDucts=put_cooling_ducts
+            isFinal=True, PutCoolingDucts=put_cooling_ducts, circular=HV_WIRE_CIRCULAR
         )
 
     return _build_result_dict(
         lv_turns=best[1], lv_height=best[2], lv_thickness=best[3],
         hv_thickness=best[4], hv_length=best[5],
         core_diameter=best[6], core_length=best[7],
-        total_price=best[0], elapsed_time=total_time, put_cooling_ducts=put_cooling_ducts
+        total_price=best[0], elapsed_time=total_time, put_cooling_ducts=put_cooling_ducts,
+        circular=HV_WIRE_CIRCULAR
     )
 
 
@@ -3116,7 +4261,14 @@ def objective_for_scipy(x, put_cooling_ducts=True, tolerance=25):
     core_diameter = x[5]
     core_length = x[6]
 
-    if hv_length < hv_thickness or lv_turns < 5:
+    # Basic validity checks
+    if lv_turns < 5:
+        return 1e12
+    # For rectangular wire, hv_length must be >= hv_thickness
+    if not HV_WIRE_CIRCULAR and hv_length < hv_thickness:
+        return 1e12
+    # Core length must not exceed core diameter
+    if core_length > core_diameter:
         return 1e12
 
     try:
@@ -3128,7 +4280,7 @@ def objective_for_scipy(x, put_cooling_ducts=True, tolerance=25):
             MaterialResistivity=materialToBeUsedWire_Resistivity,
             GUARANTEEDNLL=GUARANTEED_NO_LOAD_LOSS, GUARANTEEDLL=GUARANTEED_LOAD_LOSS,
             GUARANTEEDUCC=GUARANTEED_UCC,
-            tolerance=tolerance, PutCoolingDucts=put_cooling_ducts
+            tolerance=tolerance, PutCoolingDucts=put_cooling_ducts, circular=HV_WIRE_CIRCULAR
         )
         if price < 0:
             return abs(price) + 1e6
@@ -3210,16 +4362,37 @@ def fine_search_scipy(initial_point, obround=True, put_cooling_ducts=True, toler
     return result.x, result.fun
 
 
-def global_search_de(obround=True, put_cooling_ducts=True, tolerance=25, maxiter=50, popsize=10):
+def global_search_de(obround=True, put_cooling_ducts=True, tolerance=25, maxiter=50, popsize=10, progress_callback=None):
     """Use Differential Evolution for global optimization."""
     if not SCIPY_AVAILABLE:
         print("scipy not available, falling back to parallel grid search")
         return StartOptimized(tolerance, obround, put_cooling_ducts)
 
+    def report_progress(progress, message, eta=None):
+        if progress_callback:
+            try:
+                progress_callback("DE", progress, message, eta)
+            except:
+                pass
+
     print("Running Differential Evolution global search...")
     start_time = time.time()
+    report_progress(0.0, "Starting Differential Evolution...", None)
 
     bounds = get_parameter_bounds(obround)
+
+    # Callback for iteration progress
+    iteration_count = [0]  # Use list for mutable in closure
+
+    def de_callback(xk, convergence):
+        iteration_count[0] += 1
+        elapsed = time.time() - start_time
+        progress = min(iteration_count[0] / maxiter, 0.99)
+        if iteration_count[0] > 1 and iteration_count[0] < maxiter:
+            eta = (elapsed / iteration_count[0]) * (maxiter - iteration_count[0])
+        else:
+            eta = None
+        report_progress(progress, f"DE iteration {iteration_count[0]}/{maxiter}", eta)
 
     result = differential_evolution(
         func=lambda x: objective_for_scipy(x, put_cooling_ducts, tolerance),
@@ -3229,11 +4402,13 @@ def global_search_de(obround=True, put_cooling_ducts=True, tolerance=25, maxiter
         workers=1,
         polish=True,
         seed=42,
-        disp=True
+        disp=True,
+        callback=de_callback
     )
 
     elapsed = time.time() - start_time
     print(f"DE completed in {elapsed:.2f}s")
+    report_progress(1.0, f"DE completed in {elapsed:.2f}s", None)
 
     best = result.x
     return {
@@ -3422,8 +4597,11 @@ def StartMultiSeedDE(tolerance=25, obround=True, put_cooling_ducts=True, print_r
         print(f"LV Turns: {lv_turns}")
         print(f"LV Height: {lv_height:.1f}")
         print(f"LV Thickness: {lv_thickness:.2f}")
-        print(f"HV Thickness: {hv_thickness:.2f}")
-        print(f"HV Length: {hv_length:.2f}")
+        if HV_WIRE_CIRCULAR:
+            print(f"HV Wire Diameter: {hv_thickness:.2f}")
+        else:
+            print(f"HV Thickness: {hv_thickness:.2f}")
+            print(f"HV Length: {hv_length:.2f}")
         print("=" * 60)
         print("\nVerifying with detailed calculation:")
         CalculateFinalizedPrice(
@@ -3431,26 +4609,40 @@ def StartMultiSeedDE(tolerance=25, obround=True, put_cooling_ducts=True, print_r
             core_diameter, core_length, LVRATE, HVRATE, POWERRATING, FREQUENCY,
             materialToBeUsedWire_Resistivity, GUARANTEED_NO_LOAD_LOSS,
             GUARANTEED_LOAD_LOSS, GUARANTEED_UCC,
-            isFinal=True, PutCoolingDucts=put_cooling_ducts
+            isFinal=True, PutCoolingDucts=put_cooling_ducts, circular=HV_WIRE_CIRCULAR
         )
 
     return _build_result_dict(
         lv_turns=lv_turns, lv_height=lv_height, lv_thickness=lv_thickness,
         hv_thickness=hv_thickness, hv_length=hv_length,
         core_diameter=core_diameter, core_length=core_length,
-        total_price=best_price, elapsed_time=total_time, put_cooling_ducts=put_cooling_ducts
+        total_price=best_price, elapsed_time=total_time, put_cooling_ducts=put_cooling_ducts,
+        circular=HV_WIRE_CIRCULAR
     )
 
 
-def StartSmartOptimized(tolerance=25, obround=True, put_cooling_ducts=True, use_de=False, n_lhs_samples=3000, print_result=True):
-    """Combined smart optimization: LHS coarse search + L-BFGS-B fine search."""
+def StartSmartOptimized(tolerance=25, obround=True, put_cooling_ducts=True, use_de=False, n_lhs_samples=3000, print_result=True, progress_callback=None):
+    """Combined smart optimization: LHS coarse search + L-BFGS-B fine search.
+
+    Args:
+        progress_callback: Optional function(stage, progress, message, eta_seconds) for UI updates
+    """
+    def report_progress(stage, progress, message, eta=None):
+        if progress_callback:
+            try:
+                progress_callback(stage, progress, message, eta)
+            except:
+                pass
+
     print("=" * 60)
     print("SMART OPTIMIZED TRANSFORMER SEARCH")
     print("=" * 60)
     start_time = time.time()
+    report_progress("Smart", 0.0, "Starting smart optimization...", None)
 
     if use_de:
-        interim = global_search_de(obround, put_cooling_ducts, tolerance)
+        report_progress("DE", 0.01, "Running Differential Evolution...", None)
+        interim = global_search_de(obround, put_cooling_ducts, tolerance, progress_callback=progress_callback)
         best_price = interim["price"]
         lv_turns = interim["lvfoilturns"]
         lv_height = interim["lvfoilheight"]
@@ -3460,14 +4652,22 @@ def StartSmartOptimized(tolerance=25, obround=True, put_cooling_ducts=True, use_
         core_diameter = interim["corediameter"]
         core_length = interim["corelength"]
     else:
+        report_progress("LHS", 0.01, f"LHS coarse search ({n_lhs_samples} samples)...", None)
+        lhs_start = time.time()
         coarse_result = smart_coarse_search(n_lhs_samples, obround, put_cooling_ducts, tolerance)
 
         if coarse_result is None or coarse_result[0] is None:
             print("Coarse search failed, falling back to parallel grid search")
             return StartOptimized(tolerance, obround, put_cooling_ducts, print_result)
 
+        lhs_elapsed = time.time() - lhs_start
+        report_progress("LHS", 0.5, f"LHS complete in {lhs_elapsed:.1f}s, starting L-BFGS-B...", None)
+
         initial_point, initial_price = coarse_result
+        lbfgsb_start = time.time()
         final_point, best_price = fine_search_scipy(initial_point, obround, put_cooling_ducts, tolerance)
+        lbfgsb_elapsed = time.time() - lbfgsb_start
+        report_progress("L-BFGS-B", 0.95, f"L-BFGS-B complete in {lbfgsb_elapsed:.1f}s", None)
 
         lv_turns = int(round(final_point[0]))
         lv_height = final_point[1]
@@ -3478,6 +4678,7 @@ def StartSmartOptimized(tolerance=25, obround=True, put_cooling_ducts=True, use_
         core_length = final_point[6]
 
     total_time = time.time() - start_time
+    report_progress("Complete", 1.0, f"Complete! Best price: {best_price:.2f} in {total_time:.1f}s", None)
 
     if print_result:
         print("=" * 60)
@@ -3498,14 +4699,15 @@ def StartSmartOptimized(tolerance=25, obround=True, put_cooling_ducts=True, use_
             core_diameter, core_length, LVRATE, HVRATE, POWERRATING, FREQUENCY,
             materialToBeUsedWire_Resistivity, GUARANTEED_NO_LOAD_LOSS,
             GUARANTEED_LOAD_LOSS, GUARANTEED_UCC,
-            isFinal=True, PutCoolingDucts=put_cooling_ducts
+            isFinal=True, PutCoolingDucts=put_cooling_ducts, circular=HV_WIRE_CIRCULAR
         )
 
     return _build_result_dict(
         lv_turns=lv_turns, lv_height=lv_height, lv_thickness=lv_thickness,
         hv_thickness=hv_thickness, hv_length=hv_length,
         core_diameter=core_diameter, core_length=core_length,
-        total_price=best_price, elapsed_time=total_time, put_cooling_ducts=put_cooling_ducts
+        total_price=best_price, elapsed_time=total_time, put_cooling_ducts=put_cooling_ducts,
+        circular=HV_WIRE_CIRCULAR
     )
 
 
@@ -3514,7 +4716,7 @@ def StartSmartOptimized(tolerance=25, obround=True, put_cooling_ducts=True, use_
 # =============================================================================
 
 def _build_result_dict(lv_turns, lv_height, lv_thickness, hv_thickness, hv_length,
-                       core_diameter, core_length, total_price, elapsed_time, put_cooling_ducts=True):
+                       core_diameter, core_length, total_price, elapsed_time, put_cooling_ducts=True, circular=False):
     """Build comprehensive result dictionary with all design details.
 
     Uses current module-level values for LVRATE, HVRATE, POWERRATING, etc.
@@ -3537,40 +4739,40 @@ def _build_result_dict(lv_turns, lv_height, lv_thickness, hv_thickness, hv_lengt
             LVRATE=_lvrate, HVRATE=_hvrate, POWER=_power, FREQ=_freq,
             MaterialResistivity=_resistivity,
             GUARANTEEDNLL=GUARANTEED_NO_LOAD_LOSS, GUARANTEEDLL=GUARANTEED_LOAD_LOSS,
-            GUARANTEEDUCC=GUARANTEED_UCC
+            GUARANTEEDUCC=GUARANTEED_UCC, circular=circular
         )
 
     # Calculate losses - pass all parameters explicitly
     load_loss, _, _ = CalculateLoadLosses(
         lv_turns, lv_thickness, core_diameter, lv_height, hv_thickness, hv_length,
         _resistivity, _power, _hvrate, _lvrate, core_length,
-        n_ducts_lv, n_ducts_hv
+        n_ducts_lv, n_ducts_hv, circular
     )
 
     no_load_loss = CalculateNoLoadLosses(
         lv_turns, lv_height, lv_thickness, hv_thickness, hv_length,
-        core_diameter, _lvrate, core_length, n_ducts_lv, n_ducts_hv
+        core_diameter, _lvrate, core_length, n_ducts_lv, n_ducts_hv, circular
     )
 
     # Calculate impedance
     stray_dia = CalculateStrayDiameter(
         lv_turns, lv_thickness, lv_height, hv_thickness, hv_length,
-        core_diameter, core_length, n_ducts_lv, n_ducts_hv
+        core_diameter, core_length, n_ducts_lv, n_ducts_hv, circular
     )
     ux = CalculateUx(_power, stray_dia, lv_turns, lv_thickness, lv_height,
-                     hv_thickness, hv_length, _freq, _lvrate, n_ducts_lv, n_ducts_hv)
+                     hv_thickness, hv_length, _freq, _lvrate, n_ducts_lv, n_ducts_hv, circular)
     ur = CalculateUr(load_loss, _power)
     impedance = CalculateImpedance(ux, ur)
 
     # Calculate weights (multiply by 3 for 3-phase transformer)
     core_weight = CalculateCoreWeight(lv_turns, lv_height, lv_thickness, hv_thickness, hv_length,
-                                      core_diameter, core_length, n_ducts_lv, n_ducts_hv)
+                                      core_diameter, core_length, n_ducts_lv, n_ducts_hv, circular)
 
     lv_volume = CalculateVolumeLV(lv_turns, lv_thickness, core_diameter, lv_height, core_length, n_ducts_lv) * 3
     lv_weight = CalculateWeightOfVolume(lv_volume, materialToBeUsedFoil_Density)
 
     hv_volume = CalculateVolumeHV(lv_turns, lv_thickness, core_diameter, lv_height, hv_thickness, hv_length,
-                                  core_length, n_ducts_hv) * 3
+                                  core_length, n_ducts_hv, circular) * 3
     hv_weight = CalculateWeightOfVolume(hv_volume, materialToBeUsedWire_Density)
 
     # Calculate prices
@@ -3612,7 +4814,7 @@ def _build_result_dict(lv_turns, lv_height, lv_thickness, hv_thickness, hv_lengt
 # MAIN ENTRY POINT
 # =============================================================================
 
-def StartFast(tolerance=25, obround=True, put_cooling_ducts=True, method='de', print_result=True, grid_resolution='coarse', search_depth='normal', progress_callback=None, n_seeds=5):
+def StartFast(tolerance=25, obround=True, put_cooling_ducts=True, method='de', print_result=True, grid_resolution='coarse', search_depth='normal', progress_callback=None, n_seeds=5, constraints=None):
     """
     Fast transformer optimization with multiple algorithm options.
 
@@ -3634,6 +4836,9 @@ def StartFast(tolerance=25, obround=True, put_cooling_ducts=True, method='de', p
         search_depth: For hybrid method - 'fast', 'normal', 'thorough', 'exhaustive'
         progress_callback: Optional function(stage, progress, message, eta) for UI updates
         n_seeds: For multi_de method - number of parallel DE seeds (1-15, default 5)
+        constraints: Dict of locked parameters, e.g. {'core_diameter': 200.0, 'lv_turns': 30}
+            Supported keys: core_diameter, core_length, lv_turns, lv_height, lv_thickness,
+                           hv_thickness, hv_length
 
     Returns:
         Dictionary with optimal parameters, or None if no valid design found
@@ -3652,9 +4857,62 @@ def StartFast(tolerance=25, obround=True, put_cooling_ducts=True, method='de', p
         - 'de': ~3-5s (quick but may miss global optimum)
     """
     import sys
+
+    # Apply constraints by modifying global MIN/MAX values
+    global CORE_MINIMUM, CORE_MAXIMUM, CORELENGTH_MINIMUM
+    global FOILTURNS_MINIMUM, FOILTURNS_MAXIMUM
+    global FOILHEIGHT_MINIMUM, FOILHEIGHT_MAXIMUM
+    global FOILTHICKNESS_MINIMUM, FOILTHICKNESS_MAXIMUM
+    global HVTHICK_MINIMUM, HVTHICK_MAXIMUM
+    global HV_LEN_MINIMUM, HV_LEN_MAXIMUM
+
+    # Save original values to restore later
+    orig_values = {
+        'CORE_MINIMUM': CORE_MINIMUM, 'CORE_MAXIMUM': CORE_MAXIMUM,
+        'CORELENGTH_MINIMUM': CORELENGTH_MINIMUM,
+        'FOILTURNS_MINIMUM': FOILTURNS_MINIMUM, 'FOILTURNS_MAXIMUM': FOILTURNS_MAXIMUM,
+        'FOILHEIGHT_MINIMUM': FOILHEIGHT_MINIMUM, 'FOILHEIGHT_MAXIMUM': FOILHEIGHT_MAXIMUM,
+        'FOILTHICKNESS_MINIMUM': FOILTHICKNESS_MINIMUM, 'FOILTHICKNESS_MAXIMUM': FOILTHICKNESS_MAXIMUM,
+        'HVTHICK_MINIMUM': HVTHICK_MINIMUM, 'HVTHICK_MAXIMUM': HVTHICK_MAXIMUM,
+        'HV_LEN_MINIMUM': HV_LEN_MINIMUM, 'HV_LEN_MAXIMUM': HV_LEN_MAXIMUM,
+    }
+
+    constraints = constraints or {}
+
+    # Apply constraints by setting MIN = MAX to the constrained value
+    if 'core_diameter' in constraints:
+        val = float(constraints['core_diameter'])
+        CORE_MINIMUM = val
+        CORE_MAXIMUM = val + 0.001
+    if 'core_length' in constraints:
+        val = float(constraints['core_length'])
+        CORELENGTH_MINIMUM = val
+    if 'lv_turns' in constraints:
+        val = int(constraints['lv_turns'])
+        FOILTURNS_MINIMUM = val
+        FOILTURNS_MAXIMUM = val + 1
+    if 'lv_height' in constraints:
+        val = float(constraints['lv_height'])
+        FOILHEIGHT_MINIMUM = val
+        FOILHEIGHT_MAXIMUM = val + 0.001
+    if 'lv_thickness' in constraints:
+        val = float(constraints['lv_thickness'])
+        FOILTHICKNESS_MINIMUM = val
+        FOILTHICKNESS_MAXIMUM = val + 0.001
+    if 'hv_thickness' in constraints:
+        val = float(constraints['hv_thickness'])
+        HVTHICK_MINIMUM = val
+        HVTHICK_MAXIMUM = val + 0.001
+    if 'hv_length' in constraints:
+        val = float(constraints['hv_length'])
+        HV_LEN_MINIMUM = val
+        HV_LEN_MAXIMUM = val + 0.001
+
     print(f"\n{'='*60}")
     print(f"TRANSFORMER OPTIMIZATION - Method: {method.upper()}")
     print(f"Available GPU backends: {', '.join(GPU_OPTIONS) if GPU_OPTIONS else 'None'}")
+    if constraints:
+        print(f"Constraints: {constraints}")
     print(f"{'='*60}\n")
     sys.stdout.flush()
 
@@ -3675,9 +4933,9 @@ def StartFast(tolerance=25, obround=True, put_cooling_ducts=True, method='de', p
         elif method == 'parallel':
             result = StartOptimized(tolerance, obround, put_cooling_ducts, print_result, grid_resolution=grid_resolution, progress_callback=progress_callback)
         elif method == 'smart':
-            result = StartSmartOptimized(tolerance, obround, put_cooling_ducts, use_de=False, print_result=print_result)
+            result = StartSmartOptimized(tolerance, obround, put_cooling_ducts, use_de=False, print_result=print_result, progress_callback=progress_callback)
         elif method == 'de':
-            result = StartSmartOptimized(tolerance, obround, put_cooling_ducts, use_de=True, print_result=print_result)
+            result = StartSmartOptimized(tolerance, obround, put_cooling_ducts, use_de=True, print_result=print_result, progress_callback=progress_callback)
         elif method == 'multi_de':
             result = StartMultiSeedDE(tolerance, obround, put_cooling_ducts, print_result=print_result, n_seeds=n_seeds, progress_callback=progress_callback)
         else:
@@ -3697,7 +4955,8 @@ def StartFast(tolerance=25, obround=True, put_cooling_ducts=True, method='de', p
                 core_length=result['core_length'],
                 total_price=result['price'],
                 elapsed_time=result.get('time', 0),
-                put_cooling_ducts=put_cooling_ducts
+                put_cooling_ducts=put_cooling_ducts,
+                circular=HV_WIRE_CIRCULAR
             )
 
         return result
@@ -3706,6 +4965,22 @@ def StartFast(tolerance=25, obround=True, put_cooling_ducts=True, method='de', p
         print(f"Optimization failed with error: {e}")
         print("Falling back to original BucketFillingSmart...")
         return BucketFillingSmart(printValuesFinal=print_result, tolerance=tolerance, obround=obround, PutCoolingDuct=put_cooling_ducts)
+
+    finally:
+        # Restore original MIN/MAX values
+        CORE_MINIMUM = orig_values['CORE_MINIMUM']
+        CORE_MAXIMUM = orig_values['CORE_MAXIMUM']
+        CORELENGTH_MINIMUM = orig_values['CORELENGTH_MINIMUM']
+        FOILTURNS_MINIMUM = orig_values['FOILTURNS_MINIMUM']
+        FOILTURNS_MAXIMUM = orig_values['FOILTURNS_MAXIMUM']
+        FOILHEIGHT_MINIMUM = orig_values['FOILHEIGHT_MINIMUM']
+        FOILHEIGHT_MAXIMUM = orig_values['FOILHEIGHT_MAXIMUM']
+        FOILTHICKNESS_MINIMUM = orig_values['FOILTHICKNESS_MINIMUM']
+        FOILTHICKNESS_MAXIMUM = orig_values['FOILTHICKNESS_MAXIMUM']
+        HVTHICK_MINIMUM = orig_values['HVTHICK_MINIMUM']
+        HVTHICK_MAXIMUM = orig_values['HVTHICK_MAXIMUM']
+        HV_LEN_MINIMUM = orig_values['HV_LEN_MINIMUM']
+        HV_LEN_MAXIMUM = orig_values['HV_LEN_MAXIMUM']
 
 
 def StartBFNJITOpt(tolerance=1, printValuesProc=False, printValuesFinal=False, obround=True, PutCoolingDuct=True):
@@ -3731,7 +5006,7 @@ def _warmup_jit():
     CalculateRadialThicknessLV(20, 1.0, 0)
     CalculateAverageDiameterLV(20, 1.0, 150.0, 50.0, 0)
     CalculateTotalLengthCoilLV(20, 1.0, 150.0, 50.0, 0)
-    CalculateRadialThiccnessHV(400.0, 20, 2.0, 5.0, 0)
+    CalculateRadialThicknessHV(400.0, 20, 2.0, 5.0, 0)
     CalculateAverageDiameterHV(20, 1.0, 150.0, 400.0, 2.0, 5.0, 50.0, 0)
     CalculateTotalLengthCoilHV(20, 1.0, 150.0, 400.0, 2.0, 5.0, 50.0, 0)
     CalculateCoreWeight(20, 400.0, 1.0, 2.0, 5.0, 150.0, 50.0, 0, 0)
@@ -3784,7 +5059,7 @@ def _warmup_jit():
     _hvlen_arr = np.array([5.0], dtype=np.float64)
     parallel_grid_search_kernel(
         _core_arr, _len_arr, _turns_arr, _height_arr, _thick_arr, _hvthick_arr, _hvlen_arr,
-        25.0, True, True,
+        25.0, True, True, False,  # circular=False for warmup
         LVRATE, HVRATE, POWERRATING, FREQUENCY, materialToBeUsedWire_Resistivity,
         GUARANTEED_NO_LOAD_LOSS, GUARANTEED_LOAD_LOSS, GUARANTEED_UCC,
         CoreFillingFactorRound, CoreFillingFactorRectangular, INSULATION_THICKNESS_WIRE

@@ -107,20 +107,22 @@ def Clamp(Number, Minimum, Maximum):
         return Number
 
 def CalculateVoltsPerTurns(LVRate, LVTurns):
-    return LVRate/LVTurns
+    if LVTurns <= 0:
+        return 1e18
+    return LVRate / LVTurns
 
-def CalculateTransformer(LVNumberOfTurns, LVFoilHeight, LVFoilThiccnes, HVWireDiameter, CoreDiameter):
+def CalculateTransformer(LVNumberOfTurns, LVFoilHeight, LVFoilThickness, HVWireDiameter, CoreDiameter):
     #do calculations here
     return None
 
-def CalculateCoreWeight(LVNumberOfTurns, LVFoilHeight, LVFoilThiccnes, HVWireDiameter, CoreDiameter, CoreLength):
+def CalculateCoreWeight(LVNumberOfTurns, LVFoilHeight, LVFoilThickness, HVWireDiameter, CoreDiameter, CoreLength):
     FoilHeight = LVFoilHeight
     WindowHeight = FoilHeight + 40
     HVNumberOfTurns = LVNumberOfTurns * HVRATE/ LVRATE
     HVLayerHeight = FoilHeight-50
     HVTurnsPerLayer = (HVLayerHeight/(HVWireDiameter+INSULATION_THICKNESS_WIRE)) -1
     HVLayerNumber = math.ceil(HVNumberOfTurns/HVTurnsPerLayer)
-    RadialThickness = CalculateRadialThicknessLV(LVNumberOfTurns, LVFoilThiccnes) + CalculateRadialThiccnessHV(LVFoilHeight, LVNumberOfTurns, HVWireDiameter) + MainGap + DistanceCoreLV
+    RadialThickness = CalculateRadialThicknessLV(LVNumberOfTurns, LVFoilThickness) + CalculateRadialThicknessHV(LVFoilHeight, LVNumberOfTurns, HVWireDiameter) + MainGap + DistanceCoreLV
     CenterBetweenLegs = (CoreDiameter +RadialThickness * 2) + PhaseGap
     SectionOfUpAndDownLegs= (CalculateCoreSection(CoreDiameter,0) * math.pi * 2 / 4) 
     #rectWeight =((3*WindowHeight*CoreLength*CoreDiameter) + (2*(CenterBetweenLegs+CoreDiameter)*(CoreLength*CoreDiameter)))#*(CoreDensity/math.pow(10,6))*(CoreFillingFactorRectangular)
@@ -134,8 +136,14 @@ def CalculateCoreWeight(LVNumberOfTurns, LVFoilHeight, LVFoilThiccnes, HVWireDia
     #basic version update later
     return CW * 100
 
-def CalculateInduction(VolsPerTurn, CoreDiameter,CoreLength):
-    return (VolsPerTurn * 10000)/(math.sqrt(2) * math.pi * FREQUENCY * CalculateCoreSection(CoreDiameter,CoreLength))
+def CalculateInduction(VolsPerTurn, CoreDiameter, CoreLength):
+    core_section = CalculateCoreSection(CoreDiameter, CoreLength)
+    if core_section <= 0:
+        return 1e18
+    denom = math.sqrt(2) * math.pi * FREQUENCY * core_section
+    if denom <= 0:
+        return 1e18
+    return (VolsPerTurn * 10000) / denom
 
 def CalculateWattsPerKG(Induction):
     return (1.3498 * math.pow(Induction,6)) + (-8.1737 * math.pow(Induction,5)) + (19.884 * math.pow(Induction,4)) + (-24.708 * math.pow(Induction,3)) + (16.689 * math.pow(Induction,2)) + (-5.5386 * Induction) + (0.7462)
@@ -143,17 +151,17 @@ def CalculateWattsPerKG(Induction):
 def CalculateCoreSection(CoreDiameter, CoreLength ):
     return ((math.pow(CoreDiameter,2)*math.pi)/(4*100) ) *CoreFillingFactorRound + (CoreLength*CoreDiameter/100) * CoreFillingFactorRectangular
 
-def CalculateRadialThicknessLV(LVNumberOfTurns, LVFoilThiccnes):
-    return LVNumberOfTurns * LVFoilThiccnes + ((LVNumberOfTurns-1)*LVInsulationThickness)
+def CalculateRadialThicknessLV(LVNumberOfTurns, LVFoilThickness):
+    return LVNumberOfTurns * LVFoilThickness + ((LVNumberOfTurns-1)*LVInsulationThickness)
 
-def CalculateAverageDiameterLV(LVNumberOfTurns, LVFoilThiccnes, CoreDiameter, CoreLength):
-    return CoreDiameter + (2 * DistanceCoreLV) + CalculateRadialThicknessLV(LVNumberOfTurns, LVFoilThiccnes) + (2*CoreLength/math.pi)
+def CalculateAverageDiameterLV(LVNumberOfTurns, LVFoilThickness, CoreDiameter, CoreLength):
+    return CoreDiameter + (2 * DistanceCoreLV) + CalculateRadialThicknessLV(LVNumberOfTurns, LVFoilThickness) + (2*CoreLength/math.pi)
 
-def CalculateTotalLengthCoilLV(LVNumberOfTurns, LVFoilThiccnes, CoreDiameter,CoreLength):
+def CalculateTotalLengthCoilLV(LVNumberOfTurns, LVFoilThickness, CoreDiameter,CoreLength):
 
-    return CalculateAverageDiameterLV(LVNumberOfTurns, LVFoilThiccnes, CoreDiameter,CoreLength) * math.pi * LVNumberOfTurns
+    return CalculateAverageDiameterLV(LVNumberOfTurns, LVFoilThickness, CoreDiameter,CoreLength) * math.pi * LVNumberOfTurns
 
-def CalculateRadialThiccnessHV(LVFoilHeight, LVNumberOfTurns, HVWireDiameter):
+def CalculateRadialThicknessHV(LVFoilHeight, LVNumberOfTurns, HVWireDiameter):
     FoilHeight = LVFoilHeight
     HVNumberOfTurns = LVNumberOfTurns * (HVRATE/ LVRATE)
     HVLayerHeight = FoilHeight-50
@@ -161,24 +169,24 @@ def CalculateRadialThiccnessHV(LVFoilHeight, LVNumberOfTurns, HVWireDiameter):
     HVLayerNumber = math.ceil(HVNumberOfTurns/HVTurnsPerLayer)
     return HVLayerNumber*HVWireDiameter + (HVLayerNumber-1) * HVInsulationThickness 
 
-def CalculateAverageDiameterHV(LVNumberOfTurns, LVFoilThiccnes, CoreDiameter, LVFoilHeight, HVWireDiameter, CoreLength):
-    return CoreDiameter + 2*DistanceCoreLV + 2*CalculateRadialThicknessLV(LVNumberOfTurns, LVFoilThiccnes) + 2 * MainGap + CalculateRadialThiccnessHV(LVFoilHeight, LVNumberOfTurns, HVWireDiameter) + (2*CoreLength/math.pi)
+def CalculateAverageDiameterHV(LVNumberOfTurns, LVFoilThickness, CoreDiameter, LVFoilHeight, HVWireDiameter, CoreLength):
+    return CoreDiameter + 2*DistanceCoreLV + 2*CalculateRadialThicknessLV(LVNumberOfTurns, LVFoilThickness) + 2 * MainGap + CalculateRadialThicknessHV(LVFoilHeight, LVNumberOfTurns, HVWireDiameter) + (2*CoreLength/math.pi)
 
-def CalculateTotalLengthCoilHV(LVNumberOfTurns, LVFoilThiccnes, CoreDiameter, LVFoilHeight, HVWireDiameter,CoreLength):
+def CalculateTotalLengthCoilHV(LVNumberOfTurns, LVFoilThickness, CoreDiameter, LVFoilHeight, HVWireDiameter,CoreLength):
     FoilHeight = LVFoilHeight
     HVNumberOfTurns = LVNumberOfTurns * HVRATE/ LVRATE
     #Number of Turns = " + str(HVNumberOfTurns))
     HVLayerHeight = FoilHeight-20
     HVTurnsPerLayer = (HVLayerHeight/HVWireDiameter) -1
     HVLayerNumber = math.ceil(HVNumberOfTurns/HVTurnsPerLayer)
-    return CalculateAverageDiameterHV(LVNumberOfTurns, LVFoilThiccnes, CoreDiameter, LVFoilHeight, HVWireDiameter,CoreLength) * math.pi * HVNumberOfTurns
+    return CalculateAverageDiameterHV(LVNumberOfTurns, LVFoilThickness, CoreDiameter, LVFoilHeight, HVWireDiameter,CoreLength) * math.pi * HVNumberOfTurns
 
-def CalculateVolumeLV(LVNumberOfTurns, LVFoilThiccnes, CoreDiameter, LVFoilHeight,CoreLength):
-    length = CalculateTotalLengthCoilLV(LVNumberOfTurns, LVFoilThiccnes, CoreDiameter,CoreLength)
-    return (length * LVFoilHeight * LVFoilThiccnes) / (1000000)
+def CalculateVolumeLV(LVNumberOfTurns, LVFoilThickness, CoreDiameter, LVFoilHeight,CoreLength):
+    length = CalculateTotalLengthCoilLV(LVNumberOfTurns, LVFoilThickness, CoreDiameter,CoreLength)
+    return (length * LVFoilHeight * LVFoilThickness) / (1000000)
 
-def CalculateVolumeHV(LVNumberOfTurns, LVFoilThiccnes, CoreDiameter, LVFoilHeight, HVWireDiameter,CoreLength):
-    length = CalculateTotalLengthCoilHV(LVNumberOfTurns, LVFoilThiccnes, CoreDiameter, LVFoilHeight, HVWireDiameter,CoreLength)
+def CalculateVolumeHV(LVNumberOfTurns, LVFoilThickness, CoreDiameter, LVFoilHeight, HVWireDiameter,CoreLength):
+    length = CalculateTotalLengthCoilHV(LVNumberOfTurns, LVFoilThickness, CoreDiameter, LVFoilHeight, HVWireDiameter,CoreLength)
     return (length * math.pi * math.pow(HVWireDiameter,2)) / (4 * 1000000)
 
 def CalculateWeightOfVolume(Volume, Material):
@@ -208,13 +216,13 @@ def CalculateCurrentHV(Power, VoltageHV):
 def CalculateSectionHV(Diameter):
     return math.pi * math.pow(Diameter,2) / 4
 
-def CalculateSectionLV(HeightLV, ThiccnessLV):
-    return HeightLV * ThiccnessLV
+def CalculateSectionLV(HeightLV, ThicknessLV):
+    return HeightLV * ThicknessLV
 
-def CalculateLoadLosses(LVNumberOfTurns, LVFoilThiccnes, CoreDiameter, LVFoilHeight, HVWireDiameter, Material, Power, HVRating, LVRating,CoreLength):
-    lvLength = CalculateTotalLengthCoilLV(LVNumberOfTurns, LVFoilThiccnes, CoreDiameter,CoreLength)
-    hvLength = CalculateTotalLengthCoilHV(LVNumberOfTurns, LVFoilThiccnes, CoreDiameter, LVFoilHeight, HVWireDiameter,CoreLength)
-    lvSection = CalculateSectionLV(LVFoilHeight, LVFoilThiccnes)
+def CalculateLoadLosses(LVNumberOfTurns, LVFoilThickness, CoreDiameter, LVFoilHeight, HVWireDiameter, Material, Power, HVRating, LVRating,CoreLength):
+    lvLength = CalculateTotalLengthCoilLV(LVNumberOfTurns, LVFoilThickness, CoreDiameter,CoreLength)
+    hvLength = CalculateTotalLengthCoilHV(LVNumberOfTurns, LVFoilThickness, CoreDiameter, LVFoilHeight, HVWireDiameter,CoreLength)
+    lvSection = CalculateSectionLV(LVFoilHeight, LVFoilThickness)
     hvSection = CalculateSectionHV(HVWireDiameter)
     lvResistance = CalculateResistanceLV(Material, lvLength, lvSection)
     hvResistance = CalculateResistanceHV(Material, hvLength, hvSection)
@@ -230,17 +238,17 @@ def CalculateLoadLosses(LVNumberOfTurns, LVFoilThiccnes, CoreDiameter, LVFoilHei
     losses = (lvResistance * math.pow(lvCurrent,2) + hvResistance * math.pow(hvCurrent,2)) * 3 * 1.04 #1.16 # a constant change it carefully if you will
     return losses
 
-def CalculateNoLoadLosses(LVNumberOfTurns, LVFoilHeight, LVFoilThiccnes, HVWireDiameter, CoreDiameter, LVRate,CoreLength):
-    CoreWeight =  CalculateCoreWeight(LVNumberOfTurns, LVFoilHeight, LVFoilThiccnes, HVWireDiameter, CoreDiameter,CoreLength)
+def CalculateNoLoadLosses(LVNumberOfTurns, LVFoilHeight, LVFoilThickness, HVWireDiameter, CoreDiameter, LVRate,CoreLength):
+    CoreWeight =  CalculateCoreWeight(LVNumberOfTurns, LVFoilHeight, LVFoilThickness, HVWireDiameter, CoreDiameter,CoreLength)
     Induction = CalculateInduction(CalculateVoltsPerTurns(LVRate, LVNumberOfTurns), CoreDiameter,CoreLength)
     WattsPerKG = CalculateWattsPerKG(Induction)
     return WattsPerKG * CoreWeight * 1.2 #some constant multiplier change it if you will
 
-def CalculateStrayDiameter(LVNumberOfTurns,LVFoilThiccness, LVFoilHeight, HVWireDiameter, DiameterOfCore, CoreLength):
-    MainGapDiameter = DiameterOfCore + DistanceCoreLV*2 + CalculateRadialThicknessLV(LVNumberOfTurns, LVFoilThiccness)*2 + (2*CoreLength/math.pi) + MainGap
-    HVRadialThickness = CalculateRadialThiccnessHV(LVFoilHeight,LVNumberOfTurns, HVWireDiameter)
+def CalculateStrayDiameter(LVNumberOfTurns,LVFoilThicknesss, LVFoilHeight, HVWireDiameter, DiameterOfCore, CoreLength):
+    MainGapDiameter = DiameterOfCore + DistanceCoreLV*2 + CalculateRadialThicknessLV(LVNumberOfTurns, LVFoilThicknesss)*2 + (2*CoreLength/math.pi) + MainGap
+    HVRadialThickness = CalculateRadialThicknessHV(LVFoilHeight,LVNumberOfTurns, HVWireDiameter)
     ReducedWidthHV = HVRadialThickness/3
-    LVRadialThickness = CalculateRadialThicknessLV(LVNumberOfTurns, LVFoilThiccness)
+    LVRadialThickness = CalculateRadialThicknessLV(LVNumberOfTurns, LVFoilThicknesss)
     ReducedWidthLV = LVRadialThickness/3
     SD = MainGapDiameter + ReducedWidthHV - ReducedWidthLV + (    (math.pow(ReducedWidthHV,2)-math.pow(ReducedWidthLV,2))/(ReducedWidthLV+ReducedWidthHV+MainGap)    )
     return SD
@@ -248,10 +256,10 @@ def CalculateStrayDiameter(LVNumberOfTurns,LVFoilThiccness, LVFoilHeight, HVWire
 def CalculateUr(LoadLosses, Power):
     return (LoadLosses) /(10 * Power)
 
-def CalculateUx(Power, StrayDiameter, LVNumberOfTurns,LVFoilThiccness, LVFoilHeight, HVWireDiameter, Frequency, LVRate):
-    HVRadialThickness = CalculateRadialThiccnessHV(LVFoilHeight,LVNumberOfTurns, HVWireDiameter)
+def CalculateUx(Power, StrayDiameter, LVNumberOfTurns,LVFoilThicknesss, LVFoilHeight, HVWireDiameter, Frequency, LVRate):
+    HVRadialThickness = CalculateRadialThicknessHV(LVFoilHeight,LVNumberOfTurns, HVWireDiameter)
     ReducedWidthHV = HVRadialThickness/3
-    LVRadialThickness = CalculateRadialThicknessLV(LVNumberOfTurns, LVFoilThiccness)
+    LVRadialThickness = CalculateRadialThicknessLV(LVNumberOfTurns, LVFoilThicknesss)
     ReducedWidthLV = LVRadialThickness/3
     return (Power * StrayDiameter * Frequency * (ReducedWidthLV + ReducedWidthHV + MainGap)) / (1210 * math.pow(CalculateVoltsPerTurns(LVRate,LVNumberOfTurns),2) * LVFoilHeight)
 
@@ -259,15 +267,15 @@ def CalculateUx(Power, StrayDiameter, LVNumberOfTurns,LVFoilThiccness, LVFoilHei
 def CalculateImpedance(Ux, Ur):
     return math.sqrt(math.pow(Ux,2) + math.pow(Ur,2))
 
-def CalculatePrice(LVNumberOfTurns, LVFoilHeight, LVFoilThiccnes, HVWireDiameter, CoreDiameter,CoreLength, printValues=False):
-    wc = CalculateCoreWeight(LVNumberOfTurns, LVFoilHeight, LVFoilThiccnes, HVWireDiameter, CoreDiameter,CoreLength)
+def CalculatePrice(LVNumberOfTurns, LVFoilHeight, LVFoilThickness, HVWireDiameter, CoreDiameter,CoreLength, printValues=False):
+    wc = CalculateCoreWeight(LVNumberOfTurns, LVFoilHeight, LVFoilThickness, HVWireDiameter, CoreDiameter,CoreLength)
     pc = CalculatePriceOfWeight(wc, materialCore)
 
-    volumeHV = CalculateVolumeHV(LVNumberOfTurns, LVFoilThiccnes, CoreDiameter, LVFoilHeight, HVWireDiameter,CoreLength) * 3
+    volumeHV = CalculateVolumeHV(LVNumberOfTurns, LVFoilThickness, CoreDiameter, LVFoilHeight, HVWireDiameter,CoreLength) * 3
     whv =CalculateWeightOfVolume(volumeHV, materialToBeUsedWire)
     phv = CalculatePriceOfWeight(whv,materialToBeUsedWire)
 
-    volumeLV = CalculateVolumeLV(LVNumberOfTurns, LVFoilThiccnes, CoreDiameter, LVFoilHeight,CoreLength) * 3
+    volumeLV = CalculateVolumeLV(LVNumberOfTurns, LVFoilThickness, CoreDiameter, LVFoilHeight,CoreLength) * 3
     wlv = CalculateWeightOfVolume(volumeLV, materialToBeUsedFoil)
     plv = CalculatePriceOfWeight(wlv, materialToBeUsedFoil)
 
@@ -277,16 +285,16 @@ def CalculatePrice(LVNumberOfTurns, LVFoilHeight, LVFoilThiccnes, HVWireDiameter
         print("WIRE WEIGHT = " + str(whv))
     return pc + phv + plv
 
-def CalculateFinalizedPrice(LVNumberOfTurns, LVFoilHeight, LVFoilThiccnes, HVWireDiameter, CoreDiameter,CoreLength, LVRATE=LVRATE, HVRATE = HVRATE, POWER = POWERRATING, FREQ = FREQUENCY, Material = materialToBeUsedWire, GUARANTEEDNLL = GUARANTEED_NO_LOAD_LOSS, GUARANTEEDLL = GUARANTEED_LOAD_LOSS, GUARANTEEDUCC=GUARANTEED_UCC, isFinal=False):
+def CalculateFinalizedPrice(LVNumberOfTurns, LVFoilHeight, LVFoilThickness, HVWireDiameter, CoreDiameter,CoreLength, LVRATE=LVRATE, HVRATE = HVRATE, POWER = POWERRATING, FREQ = FREQUENCY, Material = materialToBeUsedWire, GUARANTEEDNLL = GUARANTEED_NO_LOAD_LOSS, GUARANTEEDLL = GUARANTEED_LOAD_LOSS, GUARANTEEDUCC=GUARANTEED_UCC, isFinal=False):
     #HVWireDiameter += INSULATION_THICKNESS
-    Nll = CalculateNoLoadLosses(LVNumberOfTurns, LVFoilHeight, LVFoilThiccnes, HVWireDiameter, CoreDiameter, LVRATE,CoreLength)
-    Ll = CalculateLoadLosses(LVNumberOfTurns, LVFoilThiccnes, CoreDiameter, LVFoilHeight, HVWireDiameter, Material, POWER, HVRATE, LVRATE,CoreLength)
+    Nll = CalculateNoLoadLosses(LVNumberOfTurns, LVFoilHeight, LVFoilThickness, HVWireDiameter, CoreDiameter, LVRATE,CoreLength)
+    Ll = CalculateLoadLosses(LVNumberOfTurns, LVFoilThickness, CoreDiameter, LVFoilHeight, HVWireDiameter, Material, POWER, HVRATE, LVRATE,CoreLength)
     inductioncalculated = CalculateInduction(CalculateVoltsPerTurns(LVRATE, LVNumberOfTurns), CoreDiameter,CoreLength)
-    strayDia = CalculateStrayDiameter(LVNumberOfTurns,LVFoilThiccnes,LVFoilHeight,HVWireDiameter,CoreDiameter,CoreLength)
-    Ux = CalculateUx(POWER, strayDia, LVNumberOfTurns, LVFoilThiccnes, LVFoilHeight, HVWireDiameter, FREQ, LVRATE)
+    strayDia = CalculateStrayDiameter(LVNumberOfTurns,LVFoilThickness,LVFoilHeight,HVWireDiameter,CoreDiameter,CoreLength)
+    Ux = CalculateUx(POWER, strayDia, LVNumberOfTurns, LVFoilThickness, LVFoilHeight, HVWireDiameter, FREQ, LVRATE)
     Ur = CalculateUr(Ll, POWER)
     Ucc = CalculateImpedance(Ux, Ur)
-    price = CalculatePrice(LVNumberOfTurns, LVFoilHeight, LVFoilThiccnes, HVWireDiameter, CoreDiameter,CoreLength,isFinal)
+    price = CalculatePrice(LVNumberOfTurns, LVFoilHeight, LVFoilThickness, HVWireDiameter, CoreDiameter,CoreLength,isFinal)
 
     penaltyForNll= max(0, Nll- GUARANTEEDNLL) * PENALTY_NLL_FACTOR
     penaltyForLL = max(0, Ll - GUARANTEEDLL) * PENALTY_LL_FACTOR
@@ -305,16 +313,16 @@ def CalculateFinalizedPrice(LVNumberOfTurns, LVFoilHeight, LVFoilThiccnes, HVWir
 
     return price + penaltyForNll + penaltyForLL + penaltyforUcc
 
-def CalculateFinalizedPriceIntolerant(LVNumberOfTurns, LVFoilHeight, LVFoilThiccnes, HVWireDiameter, CoreDiameter,CoreLength, LVRATE=LVRATE, HVRATE = HVRATE, POWER = POWERRATING, FREQ = FREQUENCY, Material = materialToBeUsedWire, GUARANTEEDNLL = GUARANTEED_NO_LOAD_LOSS, GUARANTEEDLL = GUARANTEED_LOAD_LOSS, GUARANTEEDUCC=GUARANTEED_UCC, tolerance =1, isFinal = False):
+def CalculateFinalizedPriceIntolerant(LVNumberOfTurns, LVFoilHeight, LVFoilThickness, HVWireDiameter, CoreDiameter,CoreLength, LVRATE=LVRATE, HVRATE = HVRATE, POWER = POWERRATING, FREQ = FREQUENCY, Material = materialToBeUsedWire, GUARANTEEDNLL = GUARANTEED_NO_LOAD_LOSS, GUARANTEEDLL = GUARANTEED_LOAD_LOSS, GUARANTEEDUCC=GUARANTEED_UCC, tolerance =1, isFinal = False):
     #HVWireDiameter += INSULATION_THICKNESS
-    Nll = CalculateNoLoadLosses(LVNumberOfTurns, LVFoilHeight, LVFoilThiccnes, HVWireDiameter, CoreDiameter, LVRATE,CoreLength)
-    Ll = CalculateLoadLosses(LVNumberOfTurns, LVFoilThiccnes, CoreDiameter, LVFoilHeight, HVWireDiameter, Material, POWER, HVRATE, LVRATE,CoreLength)
+    Nll = CalculateNoLoadLosses(LVNumberOfTurns, LVFoilHeight, LVFoilThickness, HVWireDiameter, CoreDiameter, LVRATE,CoreLength)
+    Ll = CalculateLoadLosses(LVNumberOfTurns, LVFoilThickness, CoreDiameter, LVFoilHeight, HVWireDiameter, Material, POWER, HVRATE, LVRATE,CoreLength)
     inductioncalculated = CalculateInduction(CalculateVoltsPerTurns(LVRATE, LVNumberOfTurns), CoreDiameter,CoreLength)
-    strayDia = CalculateStrayDiameter(LVNumberOfTurns,LVFoilThiccnes,LVFoilHeight,HVWireDiameter,CoreDiameter, CoreLength)
-    Ux = CalculateUx(POWER, strayDia, LVNumberOfTurns, LVFoilThiccnes, LVFoilHeight, HVWireDiameter, FREQ, LVRATE)
+    strayDia = CalculateStrayDiameter(LVNumberOfTurns,LVFoilThickness,LVFoilHeight,HVWireDiameter,CoreDiameter, CoreLength)
+    Ux = CalculateUx(POWER, strayDia, LVNumberOfTurns, LVFoilThickness, LVFoilHeight, HVWireDiameter, FREQ, LVRATE)
     Ur = CalculateUr(Ll, POWER)
     Ucc = CalculateImpedance(Ux, Ur)
-    price = CalculatePrice(LVNumberOfTurns, LVFoilHeight, LVFoilThiccnes, HVWireDiameter, CoreDiameter,CoreLength,printValues=isFinal)
+    price = CalculatePrice(LVNumberOfTurns, LVFoilHeight, LVFoilThickness, HVWireDiameter, CoreDiameter,CoreLength,printValues=isFinal)
 
     NllExtraLoss=max(0,Nll-GUARANTEEDNLL)
     LlExtraLoss = max(0,Ll - GUARANTEEDLL)

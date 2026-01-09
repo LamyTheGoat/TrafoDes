@@ -10,8 +10,31 @@ import time
 import sys
 import os
 import io
-from playsound3 import playsound
 from queue import Queue, Empty
+
+# Cross-platform sound playback
+if sys.platform == 'win32':
+    import winsound
+    def play_sound(path):
+        try:
+            if os.path.exists(path):
+                winsound.PlaySound(path, winsound.SND_FILENAME | winsound.SND_ASYNC)
+            else:
+                winsound.PlaySound("SystemAsterisk", winsound.SND_ALIAS | winsound.SND_ASYNC)
+        except Exception:
+            pass  # Silently ignore sound errors
+else:
+    try:
+        from playsound3 import playsound
+        def play_sound(path):
+            try:
+                playsound(path, block=False)
+            except Exception:
+                pass  # Silently ignore sound errors
+    except ImportError:
+        # playsound3 not available, create no-op function
+        def play_sound(path):
+            pass
 
 # Add current directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -384,20 +407,92 @@ class TransformerOptimizerApp:
             dpg.add_combo(["Aluminum", "Copper"], label="HV Conductor",
                          tag="hv_material", default_value="Copper", width=160,
                          callback=self._on_material_change)
+            dpg.add_spacer(height=4)
+            dpg.add_checkbox(label=" Circular HV Wire", tag="hv_circular",
+                           default_value=False, callback=self._on_circular_wire_change)
+            with dpg.tooltip(parent="hv_circular"):
+                dpg.add_text("Use circular cross-section for HV wire", color=(180, 185, 200))
+                dpg.add_text("(wire thickness = diameter)", color=(180, 185, 200))
         dpg.bind_item_theme("material_header", self.section_theme)
+
+        # Parameter Constraints
+        with dpg.collapsing_header(label=" Parameter Constraints", default_open=False, tag="constraints_header"):
+            dpg.add_text("Lock parameters to specific values:", color=(140, 145, 165))
+            dpg.add_spacer(height=4)
+
+            # Core Diameter constraint
+            with dpg.group(horizontal=True):
+                dpg.add_checkbox(label="", tag="lock_core_dia", default_value=False,
+                               callback=self._on_constraint_toggle)
+                dpg.add_input_float(label="Core Diameter (mm)", tag="constraint_core_dia",
+                                   default_value=200.0, min_value=80, max_value=500,
+                                   width=120, format="%.1f", enabled=False)
+
+            # Core Length constraint
+            with dpg.group(horizontal=True):
+                dpg.add_checkbox(label="", tag="lock_core_len", default_value=False,
+                               callback=self._on_constraint_toggle)
+                dpg.add_input_float(label="Core Length (mm)", tag="constraint_core_len",
+                                   default_value=0.0, min_value=0, max_value=500,
+                                   width=120, format="%.1f", enabled=False)
+
+            # LV Turns constraint
+            with dpg.group(horizontal=True):
+                dpg.add_checkbox(label="", tag="lock_lv_turns", default_value=False,
+                               callback=self._on_constraint_toggle)
+                dpg.add_input_int(label="LV Turns", tag="constraint_lv_turns",
+                                 default_value=30, min_value=5, max_value=100,
+                                 width=120, enabled=False)
+
+            # LV Foil Height constraint
+            with dpg.group(horizontal=True):
+                dpg.add_checkbox(label="", tag="lock_lv_height", default_value=False,
+                               callback=self._on_constraint_toggle)
+                dpg.add_input_float(label="LV Foil Height (mm)", tag="constraint_lv_height",
+                                   default_value=400.0, min_value=200, max_value=1200,
+                                   width=120, format="%.1f", enabled=False)
+
+            # LV Foil Thickness constraint
+            with dpg.group(horizontal=True):
+                dpg.add_checkbox(label="", tag="lock_lv_thick", default_value=False,
+                               callback=self._on_constraint_toggle)
+                dpg.add_input_float(label="LV Foil Thickness (mm)", tag="constraint_lv_thick",
+                                   default_value=1.0, min_value=0.3, max_value=4.0,
+                                   width=120, format="%.2f", enabled=False)
+
+            # HV Wire Thickness constraint
+            with dpg.group(horizontal=True):
+                dpg.add_checkbox(label="", tag="lock_hv_thick", default_value=False,
+                               callback=self._on_constraint_toggle)
+                dpg.add_input_float(label="HV Wire Thickness (mm)", tag="constraint_hv_thick",
+                                   default_value=2.0, min_value=1.0, max_value=5.0,
+                                   width=120, format="%.2f", enabled=False)
+
+            # HV Wire Length constraint
+            with dpg.group(horizontal=True):
+                dpg.add_checkbox(label="", tag="lock_hv_len", default_value=False,
+                               callback=self._on_constraint_toggle)
+                dpg.add_input_float(label="HV Wire Length (mm)", tag="constraint_hv_len",
+                                   default_value=4.0, min_value=1.0, max_value=20.0,
+                                   width=120, format="%.2f", enabled=False)
+
+            dpg.add_spacer(height=4)
+            dpg.add_text("Tip: Lock parameters to optimize around specific values",
+                        color=(100, 105, 125))
+        dpg.bind_item_theme("constraints_header", self.section_theme)
 
         # Optimization Settings
         with dpg.collapsing_header(label=" Optimization Settings", default_open=True, tag="opt_header"):
             # Method selection with GPU options
             method_combo = dpg.add_combo([
                 "Auto-Select (Best Available)",
+                "Multi-Seed DE (CPU, Robust)",
+                "Differential Evolution (CPU)",  
                 "Hybrid GPU (Apple MPS)",
                 "CUDA Hybrid (NVIDIA GPU)",
                 "MPS GPU (Apple Silicon)",
                 "MLX GPU (Apple Silicon)",
                 "CUDA GPU (NVIDIA)",
-                "Differential Evolution (CPU)",
-                "Multi-Seed DE (CPU, Robust)",
                 "Parallel CPU Grid Search",
                 "Smart (CPU, Quick)"
             ], label="Method", tag="opt_method",
@@ -610,7 +705,6 @@ class TransformerOptimizerApp:
                     ("LV Foil Height", "lv_height", "mm"),
                     ("LV Foil Thickness", "lv_thick", "mm"),
                     ("HV Wire Thickness", "hv_thick", "mm"),
-                    ("HV Wire Length", "hv_len", "mm"),
                 ]
 
                 for label, tag, unit in params:
@@ -618,6 +712,12 @@ class TransformerOptimizerApp:
                         dpg.add_text(label)
                         dpg.add_text("-", tag=f"result_{tag}")
                         dpg.add_text(unit, color=(120, 125, 145))
+
+                # HV Wire Length row - shown only for rectangular wire
+                with dpg.table_row(tag="hv_len_row"):
+                    dpg.add_text("HV Wire Length", tag="hv_len_label")
+                    dpg.add_text("-", tag="result_hv_len")
+                    dpg.add_text("mm", color=(120, 125, 145))
         dpg.bind_item_theme("params_header", self.section_theme)
 
         with dpg.collapsing_header(label=" Performance Results", tag="perf_header", default_open=True):
@@ -670,6 +770,43 @@ class TransformerOptimizerApp:
     def _on_material_change(self, sender, app_data):
         """Handle material selection change."""
         self._apply_material_settings()
+
+    def _on_circular_wire_change(self, sender, app_data):
+        """Handle circular HV wire checkbox change."""
+        mainRect.HV_WIRE_CIRCULAR = app_data
+
+    def _on_constraint_toggle(self, sender, app_data):
+        """Enable/disable constraint input field when checkbox is toggled."""
+        # Map checkbox tags to their corresponding input field tags
+        constraint_map = {
+            "lock_core_dia": "constraint_core_dia",
+            "lock_core_len": "constraint_core_len",
+            "lock_lv_turns": "constraint_lv_turns",
+            "lock_lv_height": "constraint_lv_height",
+            "lock_lv_thick": "constraint_lv_thick",
+            "lock_hv_thick": "constraint_hv_thick",
+            "lock_hv_len": "constraint_hv_len",
+        }
+        if sender in constraint_map:
+            input_tag = constraint_map[sender]
+            dpg.configure_item(input_tag, enabled=app_data)
+
+    def _get_constraints(self):
+        """Collect locked parameter constraints from UI."""
+        constraints = {}
+        constraint_params = [
+            ("lock_core_dia", "constraint_core_dia", "core_diameter"),
+            ("lock_core_len", "constraint_core_len", "core_length"),
+            ("lock_lv_turns", "constraint_lv_turns", "lv_turns"),
+            ("lock_lv_height", "constraint_lv_height", "lv_height"),
+            ("lock_lv_thick", "constraint_lv_thick", "lv_thickness"),
+            ("lock_hv_thick", "constraint_hv_thick", "hv_thickness"),
+            ("lock_hv_len", "constraint_hv_len", "hv_length"),
+        ]
+        for lock_tag, value_tag, param_name in constraint_params:
+            if dpg.get_value(lock_tag):
+                constraints[param_name] = dpg.get_value(value_tag)
+        return constraints
 
     def _on_method_change(self, sender, app_data):
         """Show/hide search depth or grid resolution based on method selection."""
@@ -787,6 +924,9 @@ class TransformerOptimizerApp:
         """Update mainRect module parameters from UI inputs."""
         # Apply material settings first
         self._apply_material_settings()
+
+        # HV wire shape (circular vs rectangular)
+        mainRect.HV_WIRE_CIRCULAR = dpg.get_value("hv_circular")
 
         # Connection types (Delta=1.0, Star=1/sqrt(3) for phase voltage)
         hv_conn = dpg.get_value("hv_connection")
@@ -919,6 +1059,7 @@ class TransformerOptimizerApp:
         obround = dpg.get_value("obround")
         cooling_ducts = dpg.get_value("cooling_ducts")
         de_seeds = dpg.get_value("de_seeds")
+        constraints = self._get_constraints()
 
         def progress_callback(stage, progress, message, eta=None):
             """Handle progress updates from optimization."""
@@ -957,6 +1098,13 @@ class TransformerOptimizerApp:
                 elif method == 'cuda_hybrid':
                     method_name = f"CUDA HYBRID ({search_depth.upper()})"
                 dpg.set_value("progress_text", f"Running {method_name} optimization...")
+
+                # Print constraint info
+                if constraints:
+                    print(f"\nParameter Constraints Active:")
+                    for param, value in constraints.items():
+                        print(f"  - {param}: {value}")
+                    print()
                 dpg.set_value("progress_bar", 0.05)
 
                 # Run the optimization with progress callback
@@ -969,7 +1117,8 @@ class TransformerOptimizerApp:
                     grid_resolution=grid_resolution,
                     search_depth=search_depth,
                     progress_callback=progress_callback,
-                    n_seeds=de_seeds
+                    n_seeds=de_seeds,
+                    constraints=constraints
                 )
 
                 dpg.set_value("progress_bar", 1.0)
@@ -983,7 +1132,7 @@ class TransformerOptimizerApp:
                     dpg.configure_item("status_text", color=(72, 199, 142))
                     dpg.set_value("progress_text", "Optimization complete!")
                     try:
-                        playsound(resource_path("quack.wav"))
+                        play_sound(resource_path("quack.wav"))
                     except:
                         pass
                 else:
@@ -1044,7 +1193,14 @@ class TransformerOptimizerApp:
         dpg.set_value("result_lv_height", f"{result['lv_height']:.1f}")
         dpg.set_value("result_lv_thick", f"{result['lv_thickness']:.2f}")
         dpg.set_value("result_hv_thick", f"{result['hv_thickness']:.2f}")
-        dpg.set_value("result_hv_len", f"{result['hv_length']:.1f}")
+
+        # For circular wire, hide HV Wire Length row (only diameter matters)
+        is_circular = mainRect.HV_WIRE_CIRCULAR
+        if is_circular:
+            dpg.hide_item("hv_len_row")
+        else:
+            dpg.show_item("hv_len_row")
+            dpg.set_value("result_hv_len", f"{result['hv_length']:.1f}")
 
         # Performance metrics
         dpg.set_value("result_nll", f"{result['no_load_loss']:.1f}")

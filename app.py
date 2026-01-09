@@ -230,7 +230,8 @@ def mock_optimization_engine(inputs):
 # 3. GRAFİKLER (AYNI KALDI)
 # ==============================================================================
 def plot_losses_gauge(val, limit, title):
-    if limit is None or limit == 0: limit = val * 1.1
+    if limit is None or limit <= 0:
+        limit = max(val * 1.1, 1.0)  # Ensure non-zero limit
     fig = go.Figure(go.Indicator(
         mode = "gauge+number+delta",
         value = val,
