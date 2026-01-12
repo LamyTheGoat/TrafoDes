@@ -28,3 +28,14 @@ pyinstaller>=6.0
 # streamlit>=1.30
 # plotly>=5.18
 # pandas>=2.0
+
+# Machine Learning dependencies (for ml/ module)
+h5py>=3.8                    # Large dataset storage
+scikit-learn>=1.2            # Preprocessing, metrics
+
+# ML Training (optional - for training new models)
+# Uncomment if training models:
+# gymnasium>=0.29             # RL environment API
+# stable-baselines3>=2.0      # RL algorithms (SAC, PPO)
+# wandb>=0.15                  # Experiment tracking
+# optuna>=3.0                  # Hyperparameter tuning
