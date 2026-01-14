@@ -628,7 +628,7 @@ def _binary_search_margin(
     mult_low = 0.3
     mult_high = 8.0
     best_result = None
-    best_margin = -float('inf')
+    best_margin = float('inf')  # Start high, we want to MINIMIZE margin (closest to limits = cheapest)
 
     # First, try the loosest limits to see if ANY solution fits budget
     result = _run_single_optimization(
@@ -672,7 +672,7 @@ def _binary_search_margin(
     else:
         # Solution exceeds tolerance - not valid
         best_result = None
-        best_margin = -float('inf')
+        best_margin = float('inf')
 
     # Now binary search to find tighter limits that still fit budget
     for _ in range(num_iterations):
@@ -704,8 +704,8 @@ def _binary_search_margin(
             ll_margin = (guaranteed_ll - ll) / guaranteed_ll if guaranteed_ll > 0 else 0
             total_margin = 0.5 * nll_margin + 0.5 * ll_margin
 
-            # Accept if margins are within tolerance and better than previous
-            if nll_margin >= -loss_tolerance and ll_margin >= -loss_tolerance and total_margin > best_margin:
+            # Accept if margins are within tolerance and LOWER than previous (minimize margin = closest to limits = cheapest)
+            if nll_margin >= -loss_tolerance and ll_margin >= -loss_tolerance and total_margin < best_margin:
                 best_margin = total_margin
                 best_result = {
                     'power': power,
