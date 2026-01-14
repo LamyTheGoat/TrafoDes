@@ -711,6 +711,9 @@ def calculate_tank_and_oil(
         'oil_weight': oil_data['weight_kg'],
         'oil_price': oil_data['price'],
 
+        # Total price (tank + oil)
+        'total_tank_oil_price': tank_price + oil_data['price'],
+
         # Configuration used
         'clearances': {
             'x': clearance_x,

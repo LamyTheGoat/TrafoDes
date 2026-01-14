@@ -676,11 +676,13 @@ class TransformerOptimizerApp:
                 dpg.add_spacer(height=8)
                 dpg.add_text(" Loss Factors", color=(100, 165, 255))
                 dpg.add_separator()
+                dpg.add_text("Additional Loss (IEC 60076 Dowell)", color=(180, 180, 180))
+                dpg.add_text("Calculated automatically from geometry", color=(120, 120, 120))
 
-                dpg.add_input_float(label="Loss Factor LV", tag="mat_loss_factor_lv",
-                                   default_value=1.12, width=140, format="%.2f")
-                dpg.add_input_float(label="Loss Factor HV", tag="mat_loss_factor_hv",
-                                   default_value=1.12, width=140, format="%.2f")
+                dpg.add_input_float(label="Loss Factor LV (deprecated)", tag="mat_loss_factor_lv",
+                                   default_value=1.12, width=140, format="%.2f", enabled=False)
+                dpg.add_input_float(label="Loss Factor HV (deprecated)", tag="mat_loss_factor_hv",
+                                   default_value=1.12, width=140, format="%.2f", enabled=False)
 
                 dpg.add_spacer(height=12)
                 with dpg.group(horizontal=True):
