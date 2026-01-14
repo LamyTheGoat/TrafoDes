@@ -11,6 +11,9 @@ __pycache__/
 venv/
 ENV/
 
+#machine learning
+ml/
+
 # PyInstaller build artifacts
 build/
 dist/
