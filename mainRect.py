@@ -151,8 +151,129 @@ PhaseGap = 12
 CoreFillingFactorRound = 0.84
 CoreFillingFactorRectangular = 0.97
 
-AdditionalLossFactorLV = 1.12
-AdditionalLossFactorHV = 1.12
+AdditionalLossFactorLV = 1.12  # DEPRECATED: Now calculated via IEC 60076 Dowell method
+AdditionalLossFactorHV = 1.12  # DEPRECATED: Now calculated via IEC 60076 Dowell method
+
+# Physical constant for IEC 60076 calculations
+MU_0 = 4 * math.pi * 1e-7  # Permeability of free space (H/m)
+
+
+@njit(fastmath=True)
+def calculate_skin_depth(resistivity, frequency):
+    """
+    Calculate skin depth for conductor material (IEC 60076).
+
+    Args:
+        resistivity: Material resistivity in Ω·mm²/m (e.g., 0.021 for copper)
+        frequency: Operating frequency in Hz
+
+    Returns:
+        Skin depth in mm
+    """
+    # Convert resistivity from Ω·mm²/m to Ω·m (multiply by 1e-6)
+    resistivity_ohm_m = resistivity * 1e-6
+    # δ = sqrt(ρ / (π × f × μ₀))
+    delta_m = math.sqrt(resistivity_ohm_m / (math.pi * frequency * MU_0))
+    return delta_m * 1000  # Convert m to mm
+
+
+@njit(fastmath=True)
+def calculate_dowell_factor(conductor_thickness_mm, n_layers, frequency,
+                            resistivity, circular=False):
+    """
+    Calculate Dowell's AC resistance factor (F_R = R_ac / R_dc) per IEC 60076.
+
+    This factor accounts for:
+    - Skin effect (current crowding at conductor surface)
+    - Proximity effect (induced currents from adjacent layers)
+
+    Args:
+        conductor_thickness_mm: Conductor dimension perpendicular to leakage flux (mm)
+        n_layers: Number of winding layers
+        frequency: Operating frequency (Hz)
+        resistivity: Conductor resistivity in Ω·mm²/m
+        circular: True if circular wire (applies sqrt(π)/2 correction)
+
+    Returns:
+        F_R: AC/DC resistance ratio (typically 1.0 to 3.0 for power transformers)
+    """
+    # Calculate skin depth
+    delta = calculate_skin_depth(resistivity, frequency)
+
+    # For circular wire, use equivalent rectangular dimension
+    h = conductor_thickness_mm
+    if circular:
+        h = conductor_thickness_mm * math.sqrt(math.pi) / 2
+
+    # Penetration ratio
+    xi = h / delta
+
+    # Avoid numerical issues for very small xi
+    if xi < 0.01:
+        return 1.0  # For thin conductors, F_R ≈ 1
+
+    # Dowell's M and D functions
+    sinh_2xi = math.sinh(2 * xi)
+    sin_2xi = math.sin(2 * xi)
+    cosh_2xi = math.cosh(2 * xi)
+    cos_2xi = math.cos(2 * xi)
+
+    sinh_xi = math.sinh(xi)
+    sin_xi = math.sin(xi)
+    cosh_xi = math.cosh(xi)
+    cos_xi = math.cos(xi)
+
+    # M function (skin effect term)
+    denom_M = cosh_2xi - cos_2xi
+    if abs(denom_M) < 1e-10:
+        denom_M = 1e-10
+    M = xi * (sinh_2xi + sin_2xi) / denom_M
+
+    # D function (proximity effect term)
+    denom_D = cosh_xi + cos_xi
+    if abs(denom_D) < 1e-10:
+        denom_D = 1e-10
+    D = 2 * xi * (sinh_xi - sin_xi) / denom_D
+
+    # Dowell's formula: F_R = M + ((m² - 1) / 3) × D
+    m = max(1.0, float(n_layers))
+    F_R = M + ((m * m - 1) / 3.0) * D
+
+    # Clamp to reasonable range (1.0 to 5.0)
+    return max(1.0, min(5.0, F_R))
+
+
+@njit(fastmath=True)
+def calculate_hv_layer_count(lv_foil_height, lv_turns, hv_wire_thickness,
+                              hv_wire_length, hv_rate, lv_rate,
+                              insulation_thickness, circular=False):
+    """
+    Calculate number of HV winding layers.
+
+    Args:
+        lv_foil_height: LV foil height in mm
+        lv_turns: Number of LV turns
+        hv_wire_thickness: HV wire thickness (radial dimension) in mm
+        hv_wire_length: HV wire length (axial dimension) in mm
+        hv_rate: HV voltage rating
+        lv_rate: LV voltage rating
+        insulation_thickness: Insulation thickness between turns in mm
+        circular: True if circular wire
+
+    Returns:
+        Number of HV layers
+    """
+    hv_turns = lv_turns * (hv_rate / lv_rate)
+    hv_layer_height = lv_foil_height - 50
+
+    wire_axial_size = hv_wire_thickness if circular else hv_wire_length
+    turns_per_layer = (hv_layer_height / (wire_axial_size + insulation_thickness)) - 1
+
+    if turns_per_layer <= 0:
+        return 1
+
+    return int(math.ceil(hv_turns / turns_per_layer))
+
 
 # Material Properties
 CoreDensity = 7.65
@@ -366,7 +487,7 @@ def CalculateCurrentHV(Power, VoltageHV):
 
 
 @njit(fastmath=True)
-def CalculateLoadLosses(LVNumberOfTurns, LVFoilThickness, CoreDiameter, LVFoilHeight, HVWireThickness, HVWireLength, MaterialResistivity, Power, HVRating, LVRating, CoreLength, NumberOfDuctsLv, NumberOfDuctsHv, circular=False):
+def CalculateLoadLosses(LVNumberOfTurns, LVFoilThickness, CoreDiameter, LVFoilHeight, HVWireThickness, HVWireLength, MaterialResistivity, Power, HVRating, LVRating, CoreLength, NumberOfDuctsLv, NumberOfDuctsHv, circular=False, frequency=FREQUENCY):
     lvLength = CalculateTotalLengthCoilLV(LVNumberOfTurns, LVFoilThickness, CoreDiameter, CoreLength, NumberOfDuctsLv)
     hvLength = CalculateTotalLengthCoilHV(LVNumberOfTurns, LVFoilThickness, CoreDiameter, LVFoilHeight, HVWireThickness, HVWireLength, CoreLength, NumberOfDuctsHv, circular)
     lvSection = CalculateSectionLV(LVFoilHeight, LVFoilThickness)
@@ -375,8 +496,23 @@ def CalculateLoadLosses(LVNumberOfTurns, LVFoilThickness, CoreDiameter, LVFoilHe
     hvResistance = CalculateResistanceHV(MaterialResistivity, hvLength, hvSection)
     hvCurrent = CalculateCurrentHV(Power, HVRating)
     lvCurrent = CalculateCurrentLV(Power, LVRating)
-    lvLosses = lvResistance * (lvCurrent**2) * 3 * AdditionalLossFactorLV
-    hvLosses = hvResistance * (hvCurrent**2) * 3 * AdditionalLossFactorHV
+
+    # Calculate IEC 60076 Dowell factors (replaces fixed 1.12)
+    # LV: foil winding, each turn = 1 layer
+    n_layers_lv = LVNumberOfTurns
+    F_R_LV = calculate_dowell_factor(LVFoilThickness, n_layers_lv, frequency,
+                                      MaterialResistivity, circular=False)
+
+    # HV: wire winding, multiple turns per layer
+    n_layers_hv = calculate_hv_layer_count(LVFoilHeight, LVNumberOfTurns,
+                                            HVWireThickness, HVWireLength,
+                                            HVRating, LVRating, INSULATION_THICKNESS_WIRE,
+                                            circular)
+    F_R_HV = calculate_dowell_factor(HVWireThickness, n_layers_hv, frequency,
+                                      MaterialResistivity, circular=circular)
+
+    lvLosses = lvResistance * (lvCurrent**2) * 3 * F_R_LV
+    hvLosses = hvResistance * (hvCurrent**2) * 3 * F_R_HV
     return lvLosses + hvLosses, lvLosses, hvLosses
 
 
@@ -2608,10 +2744,52 @@ def _compute_batch_mps(combs, device, tolerance, lv_rate, hv_rate, power, freq, 
     resistance_lv = (total_len_lv / 1000.0) * resistivity / section_lv
     resistance_hv = (total_len_hv / 1000.0) * resistivity / section_hv
 
-    # Currents and losses
+    # Currents
     current_lv = (power * 1000.0) / (lv_rate * 3.0)
     current_hv = (power * 1000.0) / (hv_rate * 3.0)
-    load_losses = resistance_lv * (current_lv**2) * 3.0 * add_loss_lv + resistance_hv * (current_hv**2) * 3.0 * add_loss_hv
+
+    # IEC 60076 Dowell factor calculation (vectorized for PyTorch)
+    # Skin depth: δ = sqrt(ρ / (π × f × μ₀)) in mm
+    resistivity_ohm_m = resistivity * 1e-6  # Convert Ω·mm²/m to Ω·m
+    delta = math.sqrt(resistivity_ohm_m / (math.pi * freq * MU_0)) * 1000.0  # mm
+
+    # LV Dowell factor (foil winding, n_layers = turns)
+    xi_lv = thick / delta
+    xi_lv = torch.clamp(xi_lv, min=0.01)  # Avoid numerical issues
+    sinh_2xi_lv = torch.sinh(2 * xi_lv)
+    sin_2xi_lv = torch.sin(2 * xi_lv)
+    cosh_2xi_lv = torch.cosh(2 * xi_lv)
+    cos_2xi_lv = torch.cos(2 * xi_lv)
+    sinh_xi_lv = torch.sinh(xi_lv)
+    sin_xi_lv = torch.sin(xi_lv)
+    cosh_xi_lv = torch.cosh(xi_lv)
+    cos_xi_lv = torch.cos(xi_lv)
+    M_lv = xi_lv * (sinh_2xi_lv + sin_2xi_lv) / (cosh_2xi_lv - cos_2xi_lv + 1e-10)
+    D_lv = 2 * xi_lv * (sinh_xi_lv - sin_xi_lv) / (cosh_xi_lv + cos_xi_lv + 1e-10)
+    m_lv = turns.float()
+    F_R_LV = M_lv + ((m_lv * m_lv - 1) / 3.0) * D_lv
+    F_R_LV = torch.clamp(F_R_LV, min=1.0, max=5.0)
+
+    # HV Dowell factor (wire winding, n_layers = hv_layer_number)
+    h_hv = hvthick * (math.sqrt(math.pi) / 2.0) if circular else hvthick
+    xi_hv = h_hv / delta
+    xi_hv = torch.clamp(xi_hv, min=0.01)
+    sinh_2xi_hv = torch.sinh(2 * xi_hv)
+    sin_2xi_hv = torch.sin(2 * xi_hv)
+    cosh_2xi_hv = torch.cosh(2 * xi_hv)
+    cos_2xi_hv = torch.cos(2 * xi_hv)
+    sinh_xi_hv = torch.sinh(xi_hv)
+    sin_xi_hv = torch.sin(xi_hv)
+    cosh_xi_hv = torch.cosh(xi_hv)
+    cos_xi_hv = torch.cos(xi_hv)
+    M_hv = xi_hv * (sinh_2xi_hv + sin_2xi_hv) / (cosh_2xi_hv - cos_2xi_hv + 1e-10)
+    D_hv = 2 * xi_hv * (sinh_xi_hv - sin_xi_hv) / (cosh_xi_hv + cos_xi_hv + 1e-10)
+    m_hv = hv_layer_number.float()
+    F_R_HV = M_hv + ((m_hv * m_hv - 1) / 3.0) * D_hv
+    F_R_HV = torch.clamp(F_R_HV, min=1.0, max=5.0)
+
+    # Load losses with calculated Dowell factors
+    load_losses = resistance_lv * (current_lv**2) * 3.0 * F_R_LV + resistance_hv * (current_hv**2) * 3.0 * F_R_HV
 
     # Core weight
     window_height = height + 40.0
@@ -2706,10 +2884,52 @@ def _compute_batch_mlx(combs, tolerance, lv_rate, hv_rate, power, freq, resistiv
     resistance_lv = (total_len_lv / 1000.0) * resistivity / section_lv
     resistance_hv = (total_len_hv / 1000.0) * resistivity / section_hv
 
-    # Currents and losses
+    # Currents
     current_lv = (power * 1000.0) / (lv_rate * 3.0)
     current_hv = (power * 1000.0) / (hv_rate * 3.0)
-    load_losses = resistance_lv * (current_lv**2) * 3.0 * add_loss_lv + resistance_hv * (current_hv**2) * 3.0 * add_loss_hv
+
+    # IEC 60076 Dowell factor calculation (vectorized for MLX)
+    # Skin depth: δ = sqrt(ρ / (π × f × μ₀)) in mm
+    resistivity_ohm_m = resistivity * 1e-6  # Convert Ω·mm²/m to Ω·m
+    delta = math.sqrt(resistivity_ohm_m / (math.pi * freq * MU_0)) * 1000.0  # mm
+
+    # LV Dowell factor (foil winding, n_layers = turns)
+    xi_lv = thick / delta
+    xi_lv = mx.maximum(xi_lv, 0.01)  # Avoid numerical issues
+    sinh_2xi_lv = mx.sinh(2 * xi_lv)
+    sin_2xi_lv = mx.sin(2 * xi_lv)
+    cosh_2xi_lv = mx.cosh(2 * xi_lv)
+    cos_2xi_lv = mx.cos(2 * xi_lv)
+    sinh_xi_lv = mx.sinh(xi_lv)
+    sin_xi_lv = mx.sin(xi_lv)
+    cosh_xi_lv = mx.cosh(xi_lv)
+    cos_xi_lv = mx.cos(xi_lv)
+    M_lv = xi_lv * (sinh_2xi_lv + sin_2xi_lv) / (cosh_2xi_lv - cos_2xi_lv + 1e-10)
+    D_lv = 2 * xi_lv * (sinh_xi_lv - sin_xi_lv) / (cosh_xi_lv + cos_xi_lv + 1e-10)
+    m_lv = turns.astype(mx.float32)
+    F_R_LV = M_lv + ((m_lv * m_lv - 1) / 3.0) * D_lv
+    F_R_LV = mx.clip(F_R_LV, 1.0, 5.0)
+
+    # HV Dowell factor (wire winding, n_layers = hv_layer_number)
+    h_hv = hvthick * (math.sqrt(math.pi) / 2.0) if circular else hvthick
+    xi_hv = h_hv / delta
+    xi_hv = mx.maximum(xi_hv, 0.01)
+    sinh_2xi_hv = mx.sinh(2 * xi_hv)
+    sin_2xi_hv = mx.sin(2 * xi_hv)
+    cosh_2xi_hv = mx.cosh(2 * xi_hv)
+    cos_2xi_hv = mx.cos(2 * xi_hv)
+    sinh_xi_hv = mx.sinh(xi_hv)
+    sin_xi_hv = mx.sin(xi_hv)
+    cosh_xi_hv = mx.cosh(xi_hv)
+    cos_xi_hv = mx.cos(xi_hv)
+    M_hv = xi_hv * (sinh_2xi_hv + sin_2xi_hv) / (cosh_2xi_hv - cos_2xi_hv + 1e-10)
+    D_hv = 2 * xi_hv * (sinh_xi_hv - sin_xi_hv) / (cosh_xi_hv + cos_xi_hv + 1e-10)
+    m_hv = hv_layer_number.astype(mx.float32)
+    F_R_HV = M_hv + ((m_hv * m_hv - 1) / 3.0) * D_hv
+    F_R_HV = mx.clip(F_R_HV, 1.0, 5.0)
+
+    # Load losses with calculated Dowell factors
+    load_losses = resistance_lv * (current_lv**2) * 3.0 * F_R_LV + resistance_hv * (current_hv**2) * 3.0 * F_R_HV
 
     # Core weight
     window_height = height + 40.0
