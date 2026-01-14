@@ -4,6 +4,20 @@ import plotly.express as px
 import numpy as np
 import pandas as pd
 import time
+from io import BytesIO
+
+# Import batch and export utilities
+try:
+    from batch_optimizer import (
+        TransformerSpec, BatchResult, run_batch_optimization,
+        parse_specs_from_csv, parse_specs_from_dataframe,
+        generate_parametric_sweep, batch_results_to_dataframe,
+        get_default_specs_dataframe, TEMPLATE_CSV
+    )
+    from export_utils import export_csv, export_excel, export_json, export_pdf
+    BATCH_AVAILABLE = True
+except ImportError:
+    BATCH_AVAILABLE = False
 
 # ==============================================================================
 # 1. 3D GÖRSELLEŞTİRME MOTORU (V5 - ZERO GAP & SOLID FIT)
@@ -346,3 +360,215 @@ if run_btn:
 
 else:
     st.info("👈 Set parameters and click OPTIMIZE.")
+
+# ==============================================================================
+# 5. BATCH OPTIMIZATION TAB
+# ==============================================================================
+if BATCH_AVAILABLE:
+    st.divider()
+    st.header("Batch Optimization")
+
+    batch_tab1, batch_tab2, batch_tab3 = st.tabs(["Manual Input", "CSV Upload", "Parametric Sweep"])
+
+    with batch_tab1:
+        st.markdown("### Edit Transformer Specifications")
+        st.caption("Add or modify rows in the table below")
+
+        # Editable dataframe
+        default_df = get_default_specs_dataframe()
+        edited_df = st.data_editor(
+            default_df,
+            num_rows="dynamic",
+            use_container_width=True,
+            column_config={
+                "name": st.column_config.TextColumn("Name", width="medium"),
+                "power": st.column_config.NumberColumn("Power (kVA)", min_value=50, max_value=5000),
+                "hv_voltage": st.column_config.NumberColumn("HV Voltage (V)", min_value=1000, max_value=100000),
+                "lv_voltage": st.column_config.NumberColumn("LV Voltage (V)", min_value=100, max_value=1000),
+                "nll_limit": st.column_config.NumberColumn("NLL Limit (W)", min_value=100),
+                "ll_limit": st.column_config.NumberColumn("LL Limit (W)", min_value=500),
+                "ucc_target": st.column_config.NumberColumn("Ucc Target (%)", min_value=2, max_value=12),
+                "obround": st.column_config.CheckboxColumn("Obround"),
+            }
+        )
+
+        if st.button("Run Batch Optimization", key="batch_manual", type="primary"):
+            specs = parse_specs_from_dataframe(edited_df)
+            st.session_state['batch_specs'] = specs
+            st.session_state['run_batch'] = True
+
+    with batch_tab2:
+        st.markdown("### Upload CSV File")
+
+        # Download template
+        st.download_button(
+            "Download CSV Template",
+            TEMPLATE_CSV,
+            "transformer_specs_template.csv",
+            "text/csv",
+            help="Download a template CSV file with example specifications"
+        )
+
+        uploaded_file = st.file_uploader("Upload specifications CSV", type=["csv"])
+        if uploaded_file is not None:
+            csv_content = uploaded_file.read().decode('utf-8')
+            try:
+                specs = parse_specs_from_csv(csv_content)
+                st.success(f"Parsed {len(specs)} transformer specifications")
+
+                # Preview
+                preview_df = pd.DataFrame([{
+                    'Name': s.name, 'Power': s.power, 'HV': s.hv_voltage,
+                    'LV': s.lv_voltage, 'NLL': s.nll_limit, 'LL': s.ll_limit
+                } for s in specs])
+                st.dataframe(preview_df, use_container_width=True)
+
+                if st.button("Run Batch Optimization", key="batch_csv", type="primary"):
+                    st.session_state['batch_specs'] = specs
+                    st.session_state['run_batch'] = True
+
+            except Exception as e:
+                st.error(f"Error parsing CSV: {e}")
+
+    with batch_tab3:
+        st.markdown("### Parametric Sweep")
+        st.caption("Generate specifications by sweeping power values")
+
+        col1, col2 = st.columns(2)
+        with col1:
+            power_input = st.text_input("Power values (kVA)", "250, 400, 630, 1000")
+            hv_v = st.number_input("HV Voltage (V)", value=33000, min_value=1000)
+        with col2:
+            lv_v = st.number_input("LV Voltage (V)", value=400, min_value=100)
+            ucc = st.number_input("Ucc Target (%)", value=6.0, min_value=2.0, max_value=12.0)
+
+        col3, col4 = st.columns(2)
+        with col3:
+            nll_scale = st.number_input("NLL Scale (W/kVA)", value=2.0, min_value=0.5, max_value=5.0)
+        with col4:
+            ll_scale = st.number_input("LL Scale (W/kVA)", value=10.0, min_value=5.0, max_value=20.0)
+
+        if st.button("Generate & Run", key="batch_sweep", type="primary"):
+            try:
+                power_values = [float(p.strip()) for p in power_input.split(',')]
+                specs = generate_parametric_sweep(
+                    power_values=power_values,
+                    hv_voltage=hv_v,
+                    lv_voltage=lv_v,
+                    nll_scale=nll_scale,
+                    ll_scale=ll_scale,
+                    ucc_target=ucc
+                )
+                st.session_state['batch_specs'] = specs
+                st.session_state['run_batch'] = True
+            except Exception as e:
+                st.error(f"Error: {e}")
+
+    # Run batch optimization if triggered
+    if st.session_state.get('run_batch', False):
+        specs = st.session_state.get('batch_specs', [])
+        if specs:
+            st.divider()
+            st.subheader(f"Running Batch Optimization ({len(specs)} transformers)")
+
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+
+            def update_progress(completed, total, name, elapsed):
+                progress_bar.progress(completed / total)
+                status_text.text(f"Completed: {name} ({completed}/{total}) - {elapsed:.1f}s elapsed")
+
+            with st.spinner("Optimizing..."):
+                try:
+                    results = run_batch_optimization(
+                        specs,
+                        parallel=True,
+                        max_workers=4,
+                        method='de',  # Use fast DE for batch
+                        depth='fast',
+                        progress_callback=update_progress
+                    )
+
+                    st.session_state['batch_results'] = results
+                    st.success(f"Completed {len(results)} optimizations!")
+
+                except Exception as e:
+                    st.error(f"Batch optimization failed: {e}")
+
+            st.session_state['run_batch'] = False
+
+    # Display and export results
+    if 'batch_results' in st.session_state:
+        results = st.session_state['batch_results']
+
+        st.divider()
+        st.subheader("Batch Results")
+
+        # Results table
+        results_df = batch_results_to_dataframe(results)
+
+        # Select key columns for display
+        display_cols = ['name', 'power', 'total_price', 'no_load_loss', 'load_loss',
+                       'impedance', 'core_diameter', 'core_length', 'success']
+        display_cols = [c for c in display_cols if c in results_df.columns]
+        st.dataframe(results_df[display_cols], use_container_width=True)
+
+        # Export buttons
+        st.markdown("### Export Results")
+        col1, col2, col3, col4 = st.columns(4)
+
+        # Convert results to export format
+        export_data = [r.to_dict() for r in results]
+
+        with col1:
+            csv_data = export_csv(export_data, return_string=True)
+            st.download_button(
+                "Download CSV",
+                csv_data,
+                "batch_results.csv",
+                "text/csv",
+                use_container_width=True
+            )
+
+        with col2:
+            try:
+                excel_data = export_excel(export_data, return_bytes=True)
+                if excel_data:
+                    st.download_button(
+                        "Download Excel",
+                        excel_data,
+                        "batch_results.xlsx",
+                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True
+                    )
+            except Exception:
+                st.button("Excel (install openpyxl)", disabled=True, use_container_width=True)
+
+        with col3:
+            json_data = export_json(export_data, return_string=True)
+            st.download_button(
+                "Download JSON",
+                json_data,
+                "batch_results.json",
+                "application/json",
+                use_container_width=True
+            )
+
+        with col4:
+            try:
+                pdf_data = export_pdf(export_data, filepath=None, return_bytes=True)
+                if pdf_data:
+                    st.download_button(
+                        "Download PDF",
+                        pdf_data,
+                        "batch_results.pdf",
+                        "application/pdf",
+                        use_container_width=True
+                    )
+            except Exception:
+                st.button("PDF (install reportlab)", disabled=True, use_container_width=True)
+
+        # Clear results button
+        if st.button("Clear Results"):
+            del st.session_state['batch_results']
+            st.rerun()
