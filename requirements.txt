@@ -27,7 +27,11 @@ pyinstaller>=6.0
 # Uncomment if using Streamlit version:
 # streamlit>=1.30
 # plotly>=5.18
-# pandas>=2.0
+
+# Batch optimization and export
+pandas>=2.0                  # Batch data handling
+openpyxl>=3.0                # Excel export
+reportlab>=3.6               # PDF export
 
 # Machine Learning dependencies (for ml/ module)
 h5py>=3.8                    # Large dataset storage

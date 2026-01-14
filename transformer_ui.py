@@ -53,7 +53,10 @@ try:
     from batch_optimizer import (
         TransformerSpec, run_batch_optimization,
         parse_specs_from_csv, generate_parametric_sweep,
-        batch_results_to_dataframe, TEMPLATE_CSV
+        batch_results_to_dataframe, TEMPLATE_CSV,
+        run_inverse_optimization, InverseResult,
+        WINDING_MATERIALS, CORE_MATERIALS,
+        MATERIAL_COPPER, MATERIAL_ALUMINUM,
     )
     from export_utils import export_csv, export_excel, export_json, export_pdf
     BATCH_AVAILABLE = True
@@ -253,6 +256,20 @@ class TransformerOptimizerApp:
                         dpg.add_text("Batch optimization not available.", color=(255, 200, 100))
                         dpg.add_text("Check that batch_optimizer.py and export_utils.py exist.")
                         print("[DEBUG] BATCH_AVAILABLE = False")
+
+                # Inverse Optimization tab
+                with dpg.tab(label=" Inverse "):
+                    dpg.add_spacer(height=4)
+                    if BATCH_AVAILABLE:
+                        try:
+                            self._create_inverse_panel()
+                            print("[DEBUG] Inverse panel created successfully")
+                        except Exception as e:
+                            dpg.add_text(f"Error loading inverse panel: {e}", color=(255, 100, 100))
+                            print(f"[ERROR] Creating inverse panel: {e}")
+                    else:
+                        dpg.add_text("Inverse optimization not available.", color=(255, 200, 100))
+                        dpg.add_text("Check that batch_optimizer.py exists.")
 
             dpg.add_spacer(height=8)
 
@@ -856,6 +873,18 @@ class TransformerOptimizerApp:
                 dpg.add_separator()
                 dpg.add_text(f"Specs loaded: 0", tag="batch_spec_count", color=(120, 200, 160))
 
+                # Material selection
+                dpg.add_spacer(height=4)
+                dpg.add_text("Material Selection", color=(100, 165, 255))
+                with dpg.group(horizontal=True):
+                    dpg.add_combo(["Copper", "Aluminum"], tag="batch_lv_material",
+                                 default_value="Copper", label="LV (Foil)", width=100)
+                    dpg.add_combo(["Copper", "Aluminum"], tag="batch_hv_material",
+                                 default_value="Copper", label="HV (Wire)", width=100)
+                    dpg.add_combo(["Standard", "HIPERCO", "Amorphous"], tag="batch_core_material",
+                                 default_value="Standard", label="Core", width=100)
+
+                dpg.add_spacer(height=8)
                 with dpg.group(horizontal=True):
                     dpg.add_button(label=" Run Batch Optimization ", tag="batch_run_btn",
                                   callback=self._run_batch_optimization, width=180, height=32)
@@ -1047,6 +1076,15 @@ class TransformerOptimizerApp:
         method = 'de' if "DE" in method_str else 'hybrid'
         depth = 'fast'
 
+        # Get selected materials
+        lv_mat_name = dpg.get_value("batch_lv_material")
+        hv_mat_name = dpg.get_value("batch_hv_material")
+        core_mat_name = dpg.get_value("batch_core_material")
+
+        lv_material = WINDING_MATERIALS.get(lv_mat_name, MATERIAL_COPPER)
+        hv_material = WINDING_MATERIALS.get(hv_mat_name, MATERIAL_COPPER)
+        core_material = CORE_MATERIALS.get(core_mat_name, CORE_MATERIALS["Standard"])
+
         def progress_callback(completed, total, name, elapsed):
             try:
                 dpg.set_value("batch_progress", completed / total)
@@ -1062,7 +1100,10 @@ class TransformerOptimizerApp:
                     method=method,
                     depth=depth,
                     tolerance=25,
-                    progress_callback=progress_callback
+                    progress_callback=progress_callback,
+                    lv_material=lv_material,
+                    hv_material=hv_material,
+                    core_material=core_material,
                 )
 
                 self.batch_results = results
@@ -1150,6 +1191,286 @@ class TransformerOptimizerApp:
 
         except Exception as e:
             dpg.set_value("batch_export_status", f"Export error: {str(e)[:40]}")
+
+    def _create_inverse_panel(self):
+        """Create inverse optimization panel."""
+        # Initialize inverse state
+        self.inverse_result = None
+        self.is_inverse_optimizing = False
+
+        with dpg.group(horizontal=True):
+            # Left column - Input
+            with dpg.child_window(width=480, height=560, border=True):
+                dpg.add_text(" INVERSE OPTIMIZATION", color=(100, 165, 255))
+                dpg.add_separator()
+                dpg.add_spacer(height=4)
+
+                dpg.add_text("Find the best transformer for a given budget.", color=(140, 145, 165))
+                dpg.add_text("Goal: Maximize power rating, then optimize margins", color=(100, 105, 125))
+
+                dpg.add_spacer(height=12)
+
+                # Budget input
+                dpg.add_text("Budget Constraint", color=(100, 165, 255))
+                dpg.add_input_float(label="Target Price ($)", tag="inv_target_price",
+                                   default_value=3000, min_value=500, max_value=50000,
+                                   width=150, format="%.0f")
+                dpg.add_input_float(label="Price Tolerance (%)", tag="inv_price_tolerance",
+                                   default_value=5.0, min_value=0, max_value=20,
+                                   width=150, format="%.1f")
+
+                dpg.add_spacer(height=12)
+
+                # Power range
+                dpg.add_text("Power Range", color=(100, 165, 255))
+                dpg.add_input_float(label="Min Power (kVA)", tag="inv_power_min",
+                                   default_value=200, min_value=50, max_value=5000,
+                                   width=150, format="%.0f")
+                dpg.add_input_float(label="Max Power (kVA)", tag="inv_power_max",
+                                   default_value=1000, min_value=100, max_value=10000,
+                                   width=150, format="%.0f")
+                dpg.add_input_float(label="Power Step (kVA)", tag="inv_power_step",
+                                   default_value=50, min_value=10, max_value=200,
+                                   width=150, format="%.0f")
+
+                dpg.add_spacer(height=12)
+
+                # Loss limit settings (guaranteed specs)
+                dpg.add_text("Guaranteed Loss Limits", color=(100, 165, 255))
+                dpg.add_input_float(label="NLL Scale (W/kVA)", tag="inv_nll_scale",
+                                   default_value=2.0, min_value=0.5, max_value=5.0,
+                                   width=150, format="%.1f")
+                dpg.add_input_float(label="LL Scale (W/kVA)", tag="inv_ll_scale",
+                                   default_value=10.0, min_value=3.0, max_value=20.0,
+                                   width=150, format="%.1f")
+
+                dpg.add_spacer(height=12)
+
+                # Voltage settings
+                dpg.add_text("Voltage Settings", color=(100, 165, 255))
+                dpg.add_input_int(label="HV Voltage (V)", tag="inv_hv_voltage",
+                                 default_value=33000, min_value=1000, max_value=100000, width=150)
+                dpg.add_input_int(label="LV Voltage (V)", tag="inv_lv_voltage",
+                                 default_value=400, min_value=100, max_value=1000, width=150)
+
+                dpg.add_spacer(height=12)
+
+                # Material selection
+                dpg.add_text("Material Selection", color=(100, 165, 255))
+                with dpg.group(horizontal=True):
+                    dpg.add_combo(["Copper", "Aluminum"], tag="inv_lv_material",
+                                 default_value="Copper", label="LV", width=90)
+                    dpg.add_combo(["Copper", "Aluminum"], tag="inv_hv_material",
+                                 default_value="Copper", label="HV", width=90)
+                    dpg.add_combo(["Standard", "HIPERCO", "Amorphous"], tag="inv_core_material",
+                                 default_value="Standard", label="Core", width=95)
+
+                dpg.add_spacer(height=12)
+
+                # Run button
+                dpg.add_button(label=" Find Optimal Design ", tag="inv_run_btn",
+                              callback=self._run_inverse_optimization, width=200, height=32)
+
+                dpg.add_spacer(height=8)
+                dpg.add_progress_bar(tag="inv_progress", default_value=0.0, width=-1)
+                dpg.add_text("Ready", tag="inv_status", color=(120, 125, 145))
+
+            dpg.add_spacer(width=8)
+
+            # Right column - Results
+            with dpg.child_window(width=500, height=560, border=True):
+                dpg.add_text(" OPTIMAL DESIGN FOUND", color=(100, 165, 255))
+                dpg.add_separator()
+
+                # Key result metrics
+                with dpg.group(tag="inv_results_group"):
+                    dpg.add_spacer(height=8)
+
+                    # Power and Price
+                    with dpg.group(horizontal=True):
+                        with dpg.child_window(width=230, height=80, border=True):
+                            dpg.add_text("OPTIMAL POWER", color=(140, 145, 165))
+                            dpg.add_text("- kVA", tag="inv_result_power", color=(72, 199, 142))
+                        with dpg.child_window(width=230, height=80, border=True):
+                            dpg.add_text("ACHIEVED PRICE", color=(140, 145, 165))
+                            dpg.add_text("$ -", tag="inv_result_price", color=(72, 199, 142))
+
+                    dpg.add_spacer(height=8)
+
+                    # Design Margins
+                    dpg.add_text(" DESIGN MARGINS", color=(100, 165, 255))
+                    dpg.add_separator()
+
+                    with dpg.table(tag="inv_margin_table", header_row=True,
+                                  borders_innerH=True, borders_outerH=True,
+                                  borders_innerV=True, borders_outerV=True,
+                                  row_background=True):
+                        dpg.add_table_column(label="Metric", width_fixed=True, init_width_or_weight=120)
+                        dpg.add_table_column(label="Achieved", width_fixed=True, init_width_or_weight=80)
+                        dpg.add_table_column(label="Limit", width_fixed=True, init_width_or_weight=80)
+                        dpg.add_table_column(label="Margin", width_fixed=True, init_width_or_weight=80)
+
+                        with dpg.table_row():
+                            dpg.add_text("No-Load Loss (W)")
+                            dpg.add_text("-", tag="inv_nll_achieved")
+                            dpg.add_text("-", tag="inv_nll_limit")
+                            dpg.add_text("-", tag="inv_nll_margin")
+
+                        with dpg.table_row():
+                            dpg.add_text("Load Loss (W)")
+                            dpg.add_text("-", tag="inv_ll_achieved")
+                            dpg.add_text("-", tag="inv_ll_limit")
+                            dpg.add_text("-", tag="inv_ll_margin")
+
+                        with dpg.table_row():
+                            dpg.add_text("Impedance (%)")
+                            dpg.add_text("-", tag="inv_ucc_achieved")
+                            dpg.add_text("-", tag="inv_ucc_target")
+                            dpg.add_text("-", tag="inv_ucc_margin")
+
+                    dpg.add_spacer(height=8)
+
+                    # Overall margin score
+                    with dpg.group(horizontal=True):
+                        dpg.add_text("Overall Margin Score:", color=(140, 145, 165))
+                        dpg.add_text("-", tag="inv_total_margin", color=(72, 199, 142))
+
+                    dpg.add_spacer(height=12)
+
+                    # Design parameters
+                    dpg.add_text(" KEY DESIGN PARAMETERS", color=(100, 165, 255))
+                    dpg.add_separator()
+
+                    with dpg.table(tag="inv_design_table", header_row=True,
+                                  borders_innerH=True, borders_outerH=True,
+                                  borders_innerV=True, borders_outerV=True,
+                                  row_background=True):
+                        dpg.add_table_column(label="Parameter", width_fixed=True, init_width_or_weight=150)
+                        dpg.add_table_column(label="Value", width_fixed=True, init_width_or_weight=100)
+
+                        with dpg.table_row():
+                            dpg.add_text("Core Diameter (mm)")
+                            dpg.add_text("-", tag="inv_core_dia")
+                        with dpg.table_row():
+                            dpg.add_text("Core Length (mm)")
+                            dpg.add_text("-", tag="inv_core_len")
+                        with dpg.table_row():
+                            dpg.add_text("LV Turns")
+                            dpg.add_text("-", tag="inv_lv_turns")
+                        with dpg.table_row():
+                            dpg.add_text("LV Height (mm)")
+                            dpg.add_text("-", tag="inv_lv_height")
+
+                    dpg.add_spacer(height=8)
+                    dpg.add_text("", tag="inv_candidates_info", color=(100, 105, 125))
+
+    def _run_inverse_optimization(self):
+        """Run inverse optimization to find best design for budget."""
+        if not BATCH_AVAILABLE or self.is_inverse_optimizing:
+            return
+
+        self.is_inverse_optimizing = True
+        dpg.configure_item("inv_run_btn", enabled=False)
+        dpg.set_value("inv_progress", 0.0)
+        dpg.set_value("inv_status", "Starting inverse optimization...")
+
+        # Get parameters
+        target_price = dpg.get_value("inv_target_price")
+        price_tolerance = dpg.get_value("inv_price_tolerance") / 100.0
+        power_min = dpg.get_value("inv_power_min")
+        power_max = dpg.get_value("inv_power_max")
+        power_step = dpg.get_value("inv_power_step")
+        hv_voltage = dpg.get_value("inv_hv_voltage")
+        lv_voltage = dpg.get_value("inv_lv_voltage")
+        nll_scale = dpg.get_value("inv_nll_scale")
+        ll_scale = dpg.get_value("inv_ll_scale")
+
+        # Get selected materials
+        lv_mat_name = dpg.get_value("inv_lv_material")
+        hv_mat_name = dpg.get_value("inv_hv_material")
+        core_mat_name = dpg.get_value("inv_core_material")
+
+        lv_material = WINDING_MATERIALS.get(lv_mat_name, MATERIAL_COPPER)
+        hv_material = WINDING_MATERIALS.get(hv_mat_name, MATERIAL_COPPER)
+        core_material = CORE_MATERIALS.get(core_mat_name, CORE_MATERIALS["Standard"])
+
+        def progress_callback(step, total, power, status):
+            try:
+                dpg.set_value("inv_progress", step / total)
+                dpg.set_value("inv_status", f"Testing {power:.0f} kVA ({step}/{total})")
+            except:
+                pass
+
+        def run_inverse():
+            try:
+                result = run_inverse_optimization(
+                    target_price=target_price,
+                    power_min=power_min,
+                    power_max=power_max,
+                    hv_voltage=hv_voltage,
+                    lv_voltage=lv_voltage,
+                    nll_limit_scale=nll_scale,
+                    ll_limit_scale=ll_scale,
+                    ucc_target=6.0,
+                    price_tolerance=price_tolerance,
+                    power_step=power_step,
+                    method='de',
+                    depth='fast',
+                    progress_callback=progress_callback,
+                    lv_material=lv_material,
+                    hv_material=hv_material,
+                    core_material=core_material,
+                )
+
+                self.inverse_result = result
+
+                # Update UI with results
+                if result.success:
+                    dpg.set_value("inv_result_power", f"{result.power:.0f} kVA")
+                    dpg.set_value("inv_result_price", f"$ {result.price:.0f}")
+
+                    # Margins - use result fields directly
+                    dpg.set_value("inv_nll_achieved", f"{result.nll:.0f}")
+                    dpg.set_value("inv_nll_limit", f"{result.power * nll_scale:.0f}")
+                    dpg.set_value("inv_nll_margin", f"{result.nll_margin*100:.1f}%")
+
+                    dpg.set_value("inv_ll_achieved", f"{result.ll:.0f}")
+                    dpg.set_value("inv_ll_limit", f"{result.power * ll_scale:.0f}")
+                    dpg.set_value("inv_ll_margin", f"{result.ll_margin*100:.1f}%")
+
+                    dpg.set_value("inv_ucc_achieved", f"{result.ucc:.2f}")
+                    dpg.set_value("inv_ucc_target", "6.00")
+                    dpg.set_value("inv_ucc_margin", "-")  # No margin for impedance
+
+                    dpg.set_value("inv_total_margin", f"{result.total_margin*100:.1f}%")
+
+                    # Design parameters
+                    design = result.design
+                    dpg.set_value("inv_core_dia", f"{design.get('core_diameter', 0):.1f}")
+                    dpg.set_value("inv_core_len", f"{design.get('core_length', 0):.1f}")
+                    dpg.set_value("inv_lv_turns", f"{design.get('lv_turns', 0):.0f}")
+                    dpg.set_value("inv_lv_height", f"{design.get('lv_height', 0):.1f}")
+
+                    dpg.set_value("inv_candidates_info",
+                                 f"Evaluated {result.candidates_evaluated} power levels")
+                    dpg.set_value("inv_status", result.message)
+                else:
+                    dpg.set_value("inv_result_power", "Not Found")
+                    dpg.set_value("inv_result_price", "-")
+                    dpg.set_value("inv_status", result.message)
+
+                dpg.set_value("inv_progress", 1.0)
+
+            except Exception as e:
+                dpg.set_value("inv_status", f"Error: {str(e)[:50]}")
+
+            finally:
+                self.is_inverse_optimizing = False
+                dpg.configure_item("inv_run_btn", enabled=True)
+
+        # Run in thread
+        inv_thread = threading.Thread(target=run_inverse, daemon=True)
+        inv_thread.start()
 
     def _create_results_panel(self):
         """Create the results display panel."""
