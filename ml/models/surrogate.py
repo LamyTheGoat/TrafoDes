@@ -84,13 +84,22 @@ class SurrogateDataset(Dataset):
         if self.normalize:
             x = (x - self.input_mean) / self.input_std
 
-        targets = {
-            'nll': np.log1p(self.nll[idx]) if self.normalize else self.nll[idx],
-            'll': np.log1p(self.ll[idx]) if self.normalize else self.ll[idx],
-            'ucc': self.ucc[idx],
-            'price': np.log1p(self.price[idx]) if self.normalize else self.price[idx],
-            'valid': self.is_valid[idx],
-        }
+            # Properly normalize ALL targets (log transform + standardization)
+            targets = {
+                'nll': (np.log1p(self.nll[idx]) - self.nll_mean) / self.nll_std,
+                'll': (np.log1p(self.ll[idx]) - self.ll_mean) / self.ll_std,
+                'ucc': (self.ucc[idx] - self.ucc_mean) / self.ucc_std,
+                'price': (np.log1p(self.price[idx]) - self.price_mean) / self.price_std,
+                'valid': self.is_valid[idx],
+            }
+        else:
+            targets = {
+                'nll': self.nll[idx],
+                'll': self.ll[idx],
+                'ucc': self.ucc[idx],
+                'price': self.price[idx],
+                'valid': self.is_valid[idx],
+            }
 
         return torch.tensor(x, dtype=torch.float32), {
             k: torch.tensor(v, dtype=torch.float32) for k, v in targets.items()
