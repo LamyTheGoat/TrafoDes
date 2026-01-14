@@ -46,6 +46,7 @@ def resource_path(relative_path):
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), relative_path)
 
 import mainRect
+import tank_oil
 
 
 class ConsoleCapture:
@@ -537,6 +538,67 @@ class TransformerOptimizerApp:
             dpg.add_checkbox(label=" Include Cooling Ducts", tag="cooling_ducts", default_value=True)
         dpg.bind_item_theme("opt_header", self.section_theme)
 
+        # Tank & Oil Settings
+        with dpg.collapsing_header(label=" Tank & Oil", default_open=False, tag="tank_header"):
+            dpg.add_checkbox(label=" Include Tank/Oil in Price",
+                            tag="include_tank", default_value=True)
+
+            dpg.add_spacer(height=4)
+            dpg.add_text("Tank Clearances (mm)", color=(140, 145, 165))
+
+            with dpg.group(horizontal=True):
+                dpg.add_input_float(label="X", tag="clearance_x",
+                                   default_value=40.0, min_value=20, max_value=200,
+                                   width=100, format="%.0f")
+                dpg.add_input_float(label="Y", tag="clearance_y",
+                                   default_value=40.0, min_value=20, max_value=200,
+                                   width=100, format="%.0f")
+                dpg.add_input_float(label="Z", tag="clearance_z",
+                                   default_value=40.0, min_value=20, max_value=200,
+                                   width=100, format="%.0f")
+
+            dpg.add_input_float(label="Tank Wall Thick (mm)", tag="tank_wall_thickness",
+                               default_value=3.0, min_value=2.0, max_value=10.0,
+                               width=120, format="%.1f")
+            dpg.add_input_float(label="Steel Price ($/kg)", tag="steel_price",
+                               default_value=2.50, min_value=1.0, max_value=10.0,
+                               width=120, format="%.2f")
+
+            dpg.add_spacer(height=8)
+            dpg.add_text("Finwall (Corrugated)", color=(140, 145, 165))
+            dpg.add_checkbox(label=" Enable Finwall", tag="enable_finwall", default_value=True)
+
+            with dpg.group(horizontal=True):
+                dpg.add_checkbox(label="Front", tag="finwall_front", default_value=True)
+                dpg.add_checkbox(label="Back", tag="finwall_back", default_value=True)
+                dpg.add_checkbox(label="Left", tag="finwall_left", default_value=True)
+                dpg.add_checkbox(label="Right", tag="finwall_right", default_value=True)
+
+            dpg.add_checkbox(label=" Auto-optimize fin depth", tag="finwall_auto",
+                            default_value=True, callback=self._on_finwall_auto_change)
+            dpg.add_input_float(label="Target Temp Rise (K)", tag="target_temp_rise",
+                               default_value=65.0, min_value=40, max_value=100,
+                               width=120, format="%.0f")
+            dpg.add_input_float(label="Fin Depth (mm)", tag="fin_depth_manual",
+                               default_value=80.0, min_value=40, max_value=400,
+                               width=120, format="%.0f", show=False)
+            dpg.add_combo(["0.8", "1.0", "1.2", "1.5"], label="Finwall Thick (mm)",
+                         tag="finwall_thickness", default_value="1.0", width=120)
+
+            dpg.add_spacer(height=8)
+            dpg.add_text("Oil Configuration", color=(140, 145, 165))
+            dpg.add_combo(["Mineral Oil", "Natural Ester (FR3)", "Silicone Oil"],
+                         label="Oil Type", tag="oil_type",
+                         default_value="Mineral Oil", width=180,
+                         callback=self._on_oil_type_change)
+            dpg.add_input_float(label="Oil Price ($/L)", tag="oil_price",
+                               default_value=1.90, min_value=0.5, max_value=15.0,
+                               width=120, format="%.2f")
+            dpg.add_input_float(label="Fill Level (%)", tag="oil_fill_level",
+                               default_value=100.0, min_value=70, max_value=95,
+                               width=120, format="%.0f")
+        dpg.bind_item_theme("tank_header", self.section_theme)
+
     def _create_materials_panel(self):
         """Create advanced materials configuration panel."""
         with dpg.group(horizontal=True):
@@ -764,6 +826,78 @@ class TransformerOptimizerApp:
                         dpg.add_text("-", tag=f"cost_{tag}")
         dpg.bind_item_theme("cost_header", self.section_theme)
 
+        # Tank & Oil Results (initially hidden)
+        with dpg.collapsing_header(label=" Tank & Oil", tag="tank_results_header",
+                                  default_open=True, show=False):
+            # Tank Dimensions
+            with dpg.table(header_row=True, borders_innerH=True, borders_outerH=True,
+                          borders_innerV=True, borders_outerV=True, row_background=True):
+                dpg.add_table_column(label="Dimension", width_fixed=True, init_width_or_weight=130)
+                dpg.add_table_column(label="Value", width_fixed=True, init_width_or_weight=80)
+                dpg.add_table_column(label="Unit", width_fixed=True, init_width_or_weight=40)
+
+                tank_dims = [
+                    ("Tank Width", "tank_width", "mm"),
+                    ("Tank Depth", "tank_depth", "mm"),
+                    ("Tank Height", "tank_height", "mm"),
+                ]
+
+                for label, tag, unit in tank_dims:
+                    with dpg.table_row():
+                        dpg.add_text(label)
+                        dpg.add_text("-", tag=f"result_{tag}")
+                        dpg.add_text(unit, color=(120, 125, 145))
+
+            dpg.add_spacer(height=4)
+            dpg.add_text("", tag="finwall_info", color=(100, 165, 255))
+
+            dpg.add_spacer(height=4)
+
+            # Tank & Oil Costs
+            with dpg.table(header_row=True, borders_innerH=True, borders_outerH=True,
+                          borders_innerV=True, borders_outerV=True, row_background=True):
+                dpg.add_table_column(label="Component", width_fixed=True, init_width_or_weight=130)
+                dpg.add_table_column(label="Weight", width_fixed=True, init_width_or_weight=70)
+                dpg.add_table_column(label="Cost", width_fixed=True, init_width_or_weight=60)
+
+                tank_components = [
+                    ("Tank Shell", "tank_shell"),
+                    ("Finwalls", "finwall"),
+                    ("Oil", "oil"),
+                    ("TANK+OIL", "tank_oil_subtotal"),
+                ]
+
+                for label, tag in tank_components:
+                    with dpg.table_row():
+                        if "TANK" in label and "Shell" not in label:
+                            dpg.add_text(label, color=(255, 200, 100))
+                        else:
+                            dpg.add_text(label)
+                        dpg.add_text("-", tag=f"weight_{tag}")
+                        dpg.add_text("-", tag=f"cost_{tag}")
+        dpg.bind_item_theme("tank_results_header", self.section_theme)
+
+        # Total Price Summary
+        with dpg.collapsing_header(label=" Total Price Summary", tag="price_summary_header",
+                                  default_open=True):
+            with dpg.table(header_row=True, borders_innerH=True, borders_outerH=True,
+                          borders_innerV=True, borders_outerV=True, row_background=True):
+                dpg.add_table_column(label="Price Type", width_fixed=True, init_width_or_weight=180)
+                dpg.add_table_column(label="Amount", width_fixed=True, init_width_or_weight=80)
+
+                with dpg.table_row():
+                    dpg.add_text("Active Part Only")
+                    dpg.add_text("-", tag="price_active_part")
+
+                with dpg.table_row():
+                    dpg.add_text("Tank + Oil", color=(100, 165, 255))
+                    dpg.add_text("-", tag="price_tank_oil")
+
+                with dpg.table_row():
+                    dpg.add_text("GRAND TOTAL", color=(120, 255, 120))
+                    dpg.add_text("-", tag="price_grand_total")
+        dpg.bind_item_theme("price_summary_header", self.section_theme)
+
         dpg.add_spacer(height=8)
         dpg.add_text("", tag="time_text", color=(120, 200, 160))
 
@@ -774,6 +908,20 @@ class TransformerOptimizerApp:
     def _on_circular_wire_change(self, sender, app_data):
         """Handle circular HV wire checkbox change."""
         mainRect.HV_WIRE_CIRCULAR = app_data
+
+    def _on_finwall_auto_change(self, sender, app_data):
+        """Toggle between auto-optimize and manual fin depth."""
+        dpg.configure_item("target_temp_rise", show=app_data)
+        dpg.configure_item("fin_depth_manual", show=not app_data)
+
+    def _on_oil_type_change(self, sender, app_data):
+        """Update oil price based on selected oil type."""
+        oil_prices = {
+            "Mineral Oil": 1.90,
+            "Natural Ester (FR3)": 5.00,
+            "Silicone Oil": 7.00
+        }
+        dpg.set_value("oil_price", oil_prices.get(app_data, 1.90))
 
     def _on_constraint_toggle(self, sender, app_data):
         """Enable/disable constraint input field when checkbox is toggled."""
@@ -1127,7 +1275,68 @@ class TransformerOptimizerApp:
 
                 if result:
                     self.result = result
-                    self._display_results(result)
+
+                    # Post-optimization: Calculate tank and oil (if enabled)
+                    tank_oil_result = None
+                    if dpg.get_value("include_tank"):
+                        # Map oil type combo to key
+                        oil_type_map = {
+                            "Mineral Oil": "mineral",
+                            "Natural Ester (FR3)": "natural_ester",
+                            "Silicone Oil": "silicone"
+                        }
+                        oil_type = oil_type_map.get(dpg.get_value("oil_type"), "mineral")
+
+                        # Collect finwall surfaces
+                        finwall_surfaces = []
+                        if dpg.get_value("finwall_front"):
+                            finwall_surfaces.append('front')
+                        if dpg.get_value("finwall_back"):
+                            finwall_surfaces.append('back')
+                        if dpg.get_value("finwall_left"):
+                            finwall_surfaces.append('left')
+                        if dpg.get_value("finwall_right"):
+                            finwall_surfaces.append('right')
+
+                        # Call tank_oil calculation (POST-optimization)
+                        tank_oil_result = tank_oil.calculate_tank_and_oil(
+                            # From optimization result
+                            core_diameter=result['core_diameter'],
+                            core_length=result['core_length'],
+                            lv_turns=result['lv_turns'],
+                            lv_height=result['lv_height'],
+                            lv_thickness=result['lv_thickness'],
+                            hv_thickness=result['hv_thickness'],
+                            hv_length=result['hv_length'],
+                            no_load_loss=result['no_load_loss'],
+                            load_loss=result['load_loss'],
+                            # Component weights for accurate oil calculation
+                            core_weight=result['core_weight'],
+                            lv_weight=result['lv_weight'],
+                            hv_weight=result['hv_weight'],
+                            n_ducts_lv=result.get('n_ducts_lv', 0),
+                            n_ducts_hv=result.get('n_ducts_hv', 0),
+                            circular_hv=mainRect.HV_WIRE_CIRCULAR,
+                            # Tank configuration from UI
+                            clearance_x=dpg.get_value("clearance_x"),
+                            clearance_y=dpg.get_value("clearance_y"),
+                            clearance_z=dpg.get_value("clearance_z"),
+                            tank_wall_thickness=dpg.get_value("tank_wall_thickness"),
+                            steel_price_per_kg=dpg.get_value("steel_price"),
+                            # Finwall configuration
+                            enable_finwall=dpg.get_value("enable_finwall"),
+                            finwall_surfaces=finwall_surfaces,
+                            finwall_auto_optimize=dpg.get_value("finwall_auto"),
+                            target_temp_rise=dpg.get_value("target_temp_rise"),
+                            fin_depth_manual=dpg.get_value("fin_depth_manual"),
+                            finwall_thickness=float(dpg.get_value("finwall_thickness")),
+                            # Oil configuration
+                            oil_type=oil_type,
+                            oil_price_per_liter=dpg.get_value("oil_price"),
+                            oil_fill_level=dpg.get_value("oil_fill_level")
+                        )
+
+                    self._display_results(result, tank_oil_result)
                     dpg.set_value("status_text", "Complete")
                     dpg.configure_item("status_text", color=(72, 199, 142))
                     dpg.set_value("progress_text", "Optimization complete!")
@@ -1184,7 +1393,7 @@ class TransformerOptimizerApp:
         dpg.configure_item("run_btn", enabled=True)
         dpg.configure_item("stop_btn", enabled=False)
 
-    def _display_results(self, result):
+    def _display_results(self, result, tank_oil=None):
         """Display optimization results in the UI."""
         # Design parameters
         dpg.set_value("result_core_dia", f"{result['core_diameter']:.1f}")
@@ -1212,7 +1421,7 @@ class TransformerOptimizerApp:
         dpg.set_value("limit_ll", f"{mainRect.GUARANTEED_LOAD_LOSS:.0f}")
         dpg.set_value("limit_ucc", f"{mainRect.GUARANTEED_UCC:.1f}")
 
-        # Weights and costs
+        # Weights and costs (active part)
         dpg.set_value("weight_core", f"{result['core_weight']:.1f}")
         dpg.set_value("weight_lv", f"{result['lv_weight']:.1f}")
         dpg.set_value("weight_hv", f"{result['hv_weight']:.1f}")
@@ -1222,9 +1431,65 @@ class TransformerOptimizerApp:
         dpg.set_value("cost_core", f"${result['core_price']:.2f}")
         dpg.set_value("cost_lv", f"${result['lv_price']:.2f}")
         dpg.set_value("cost_hv", f"${result['hv_price']:.2f}")
-        # Show actual material cost (sum of components), not penalized optimization price
-        total_cost = result['core_price'] + result['lv_price'] + result['hv_price']
-        dpg.set_value("cost_total", f"${total_cost:.2f}")
+        # Active part price (sum of components)
+        active_part_price = result['core_price'] + result['lv_price'] + result['hv_price']
+        dpg.set_value("cost_total", f"${active_part_price:.2f}")
+
+        # Tank & Oil Results
+        tank_oil_price = 0.0
+        if tank_oil:
+            dpg.show_item("tank_results_header")
+
+            # Tank dimensions
+            dpg.set_value("result_tank_width", f"{tank_oil['tank_width']:.0f}")
+            dpg.set_value("result_tank_depth", f"{tank_oil['tank_depth']:.0f}")
+            dpg.set_value("result_tank_height", f"{tank_oil['tank_height']:.0f}")
+
+            # Finwall info with fin counts per surface
+            if tank_oil['finwall_enabled']:
+                details = tank_oil.get('finwall_details', {})
+                surface_info = []
+                for surface in tank_oil['finwall_surfaces']:
+                    if surface in details:
+                        n_fins = details[surface]['n_fins']
+                        surface_info.append(f"{surface.capitalize()}: {n_fins} fins")
+
+                if tank_oil['finwall_auto_optimized']:
+                    finwall_text = f"Finwall: {tank_oil['fin_depth']:.0f}mm depth (auto for {tank_oil['target_temp_rise']:.0f}K)\n"
+                else:
+                    finwall_text = f"Finwall: {tank_oil['fin_depth']:.0f}mm depth\n"
+                finwall_text += ", ".join(surface_info)
+            else:
+                finwall_text = "Finwall: Disabled"
+            dpg.set_value("finwall_info", finwall_text)
+
+            # Tank shell weight and cost
+            dpg.set_value("weight_tank_shell", f"{tank_oil['tank_shell_weight']:.1f}")
+            tank_shell_cost = tank_oil['tank_shell_weight'] * dpg.get_value("steel_price")
+            dpg.set_value("cost_tank_shell", f"${tank_shell_cost:.2f}")
+
+            # Finwall weight and cost
+            dpg.set_value("weight_finwall", f"{tank_oil['finwall_weight']:.1f}")
+            finwall_cost = tank_oil['finwall_weight'] * dpg.get_value("steel_price")
+            dpg.set_value("cost_finwall", f"${finwall_cost:.2f}")
+
+            # Oil weight and cost
+            dpg.set_value("weight_oil", f"{tank_oil['oil_weight']:.1f}")
+            dpg.set_value("cost_oil", f"${tank_oil['oil_price']:.2f}")
+
+            # Tank + Oil subtotal
+            tank_oil_weight = tank_oil['total_tank_weight'] + tank_oil['oil_weight']
+            tank_oil_price = tank_oil['tank_price'] + tank_oil['oil_price']
+            dpg.set_value("weight_tank_oil_subtotal", f"{tank_oil_weight:.1f}")
+            dpg.set_value("cost_tank_oil_subtotal", f"${tank_oil_price:.2f}")
+        else:
+            dpg.hide_item("tank_results_header")
+
+        # Price Summary
+        dpg.set_value("price_active_part", f"${active_part_price:.2f}")
+        dpg.set_value("price_tank_oil", f"${tank_oil_price:.2f}")
+        grand_total = active_part_price + tank_oil_price
+        dpg.set_value("price_grand_total", f"${grand_total:.2f}")
 
         # Time
         dpg.set_value("time_text", f"Optimization completed in {result['time']:.2f} seconds")
