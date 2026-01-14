@@ -258,7 +258,7 @@ class TransformerOptimizerApp:
                         print("[DEBUG] BATCH_AVAILABLE = False")
 
                 # Inverse Optimization tab
-                with dpg.tab(label=" Inverse "):
+                with dpg.tab(label=" Inverse (Alpha)"):
                     dpg.add_spacer(height=4)
                     if BATCH_AVAILABLE:
                         try:
@@ -792,7 +792,7 @@ class TransformerOptimizerApp:
 
         with dpg.group(horizontal=True):
             # Left column - Input
-            with dpg.child_window(width=580, height=560, border=True):
+            with dpg.child_window(width=660, height=560, border=True):
                 dpg.add_text(" BATCH INPUT", color=(100, 165, 255))
                 dpg.add_separator()
 
@@ -809,11 +809,11 @@ class TransformerOptimizerApp:
                                       borders_innerV=True, borders_outerV=True,
                                       row_background=True, scrollY=True, height=280):
                             dpg.add_table_column(label="Name", width_fixed=True, init_width_or_weight=80)
-                            dpg.add_table_column(label="Power", width_fixed=True, init_width_or_weight=60)
+                            dpg.add_table_column(label="Power", width_fixed=True, init_width_or_weight=70)
                             dpg.add_table_column(label="HV (V)", width_fixed=True, init_width_or_weight=70)
-                            dpg.add_table_column(label="LV (V)", width_fixed=True, init_width_or_weight=60)
-                            dpg.add_table_column(label="NLL (W)", width_fixed=True, init_width_or_weight=65)
-                            dpg.add_table_column(label="LL (W)", width_fixed=True, init_width_or_weight=65)
+                            dpg.add_table_column(label="LV (V)", width_fixed=True, init_width_or_weight=70)
+                            dpg.add_table_column(label="NLL (W)", width_fixed=True, init_width_or_weight=75)
+                            dpg.add_table_column(label="LL (W)", width_fixed=True, init_width_or_weight=75)
 
                         dpg.add_spacer(height=8)
 
@@ -821,11 +821,11 @@ class TransformerOptimizerApp:
                         dpg.add_text("Add new specification:", color=(140, 145, 165))
                         with dpg.group(horizontal=True):
                             dpg.add_input_text(tag="batch_new_name", width=80, default_value="Trafo-1")
-                            dpg.add_input_int(tag="batch_new_power", width=60, default_value=400)
-                            dpg.add_input_int(tag="batch_new_hv", width=70, default_value=33000)
-                            dpg.add_input_int(tag="batch_new_lv", width=60, default_value=400)
-                            dpg.add_input_int(tag="batch_new_nll", width=65, default_value=600)
-                            dpg.add_input_int(tag="batch_new_ll", width=65, default_value=4500)
+                            dpg.add_input_int(tag="batch_new_power", width=90, default_value=400)
+                            dpg.add_input_int(tag="batch_new_hv", width=90, default_value=33000)
+                            dpg.add_input_int(tag="batch_new_lv", width=90, default_value=400)
+                            dpg.add_input_int(tag="batch_new_nll", width=95, default_value=600)
+                            dpg.add_input_int(tag="batch_new_ll", width=95, default_value=4500)
 
                         with dpg.group(horizontal=True):
                             dpg.add_button(label=" Add Row ", callback=self._add_batch_row, width=100)
@@ -891,6 +891,12 @@ class TransformerOptimizerApp:
 
                     dpg.add_combo(["DE (Fast)", "Hybrid (Quality)"], tag="batch_method",
                                  default_value="DE (Fast)", width=130)
+
+                    dpg.add_combo(["1x", "3x (Best of 3)", "5x (Best of 5)"], tag="batch_multi_runs",
+                                 default_value="1x", label="Runs", width=110)
+
+                    dpg.add_combo(["100% (Tight)", "105% (Normal)", "110% (Relaxed)"], tag="batch_loss_target",
+                                 default_value="105% (Normal)", label="Loss Target", width=140)
 
                 dpg.add_progress_bar(tag="batch_progress", default_value=0.0, width=-1)
                 dpg.add_text("Ready", tag="batch_status", color=(120, 125, 145))
@@ -1076,6 +1082,24 @@ class TransformerOptimizerApp:
         method = 'de' if "DE" in method_str else 'hybrid'
         depth = 'fast'
 
+        # Get multi-runs setting
+        multi_runs_str = dpg.get_value("batch_multi_runs")
+        if "3x" in multi_runs_str:
+            multi_runs = 3
+        elif "5x" in multi_runs_str:
+            multi_runs = 5
+        else:
+            multi_runs = 1
+
+        # Get loss target factor (looser internal limits = cheaper designs closer to actual limit)
+        loss_target_str = dpg.get_value("batch_loss_target")
+        if "110%" in loss_target_str:
+            loss_target_factor = 1.10  # Most relaxed - cheapest
+        elif "105%" in loss_target_str:
+            loss_target_factor = 1.05  # Normal - balanced
+        else:
+            loss_target_factor = 1.0   # Tight - most margin
+
         # Get selected materials
         lv_mat_name = dpg.get_value("batch_lv_material")
         hv_mat_name = dpg.get_value("batch_hv_material")
@@ -1100,6 +1124,8 @@ class TransformerOptimizerApp:
                     method=method,
                     depth=depth,
                     tolerance=25,
+                    multi_runs=multi_runs,
+                    loss_target_factor=loss_target_factor,
                     progress_callback=progress_callback,
                     lv_material=lv_material,
                     hv_material=hv_material,
@@ -1224,13 +1250,13 @@ class TransformerOptimizerApp:
                 # Power range
                 dpg.add_text("Power Range", color=(100, 165, 255))
                 dpg.add_input_float(label="Min Power (kVA)", tag="inv_power_min",
-                                   default_value=200, min_value=50, max_value=5000,
+                                   default_value=50, min_value=25, max_value=5000,
                                    width=150, format="%.0f")
                 dpg.add_input_float(label="Max Power (kVA)", tag="inv_power_max",
-                                   default_value=1000, min_value=100, max_value=10000,
+                                   default_value=1000, min_value=50, max_value=10000,
                                    width=150, format="%.0f")
                 dpg.add_input_float(label="Power Step (kVA)", tag="inv_power_step",
-                                   default_value=50, min_value=10, max_value=200,
+                                   default_value=25, min_value=10, max_value=200,
                                    width=150, format="%.0f")
 
                 dpg.add_spacer(height=12)

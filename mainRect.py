@@ -579,7 +579,28 @@ def CalculateImpedance(Ux, Ur):
 
 
 @njit(fastmath=True)
+def CalculatePriceWithMaterials(LVNumberOfTurns, LVFoilHeight, LVFoilThickness, HVWireThickness, HVWireLength, CoreDiameter, CoreLength, NumberOfDuctsLV, NumberOfDuctsHV, circular,
+                                 core_price_per_kg, foil_density, foil_price, wire_density, wire_price):
+    """Calculate price with explicit material parameters (for batch optimization with different materials)."""
+    wc = CalculateCoreWeight(LVNumberOfTurns, LVFoilHeight, LVFoilThickness, HVWireThickness, HVWireLength, CoreDiameter, CoreLength, NumberOfDuctsLV, NumberOfDuctsHV, circular)
+    pc = CalculatePriceOfWeight(wc, core_price_per_kg)
+    volumeHV = CalculateVolumeHV(LVNumberOfTurns, LVFoilThickness, CoreDiameter, LVFoilHeight, HVWireThickness, HVWireLength, CoreLength, NumberOfDuctsHV, circular) * 3
+    whv = CalculateWeightOfVolume(volumeHV, wire_density)
+    phv = CalculatePriceOfWeight(whv, wire_price)
+    volumeLV = CalculateVolumeLV(LVNumberOfTurns, LVFoilThickness, CoreDiameter, LVFoilHeight, CoreLength, NumberOfDuctsLV) * 3
+    wlv = CalculateWeightOfVolume(volumeLV, foil_density)
+    plv = CalculatePriceOfWeight(wlv, foil_price)
+    return pc + phv + plv
+
+
+@njit(fastmath=True)
 def CalculatePrice(LVNumberOfTurns, LVFoilHeight, LVFoilThickness, HVWireThickness, HVWireLength, CoreDiameter, CoreLength, NumberOfDuctsLV, NumberOfDuctsHV, printValues=False, circular=False):
+    """Calculate price using module-level material prices (Numba JIT compiled).
+
+    Note: For batch optimization with different materials, the GPU/MPS methods pass
+    material prices as parameters and work correctly. This JIT function uses
+    default copper prices compiled at first call.
+    """
     wc = CalculateCoreWeight(LVNumberOfTurns, LVFoilHeight, LVFoilThickness, HVWireThickness, HVWireLength, CoreDiameter, CoreLength, NumberOfDuctsLV, NumberOfDuctsHV, circular)
     pc = CalculatePriceOfWeight(wc, materialCore_Price)
     volumeHV = CalculateVolumeHV(LVNumberOfTurns, LVFoilThickness, CoreDiameter, LVFoilHeight, HVWireThickness, HVWireLength, CoreLength, NumberOfDuctsHV, circular) * 3
@@ -593,6 +614,30 @@ def CalculatePrice(LVNumberOfTurns, LVFoilHeight, LVFoilThickness, HVWireThickne
         print("FOIL WEIGHT = ", wlv)
         print("WIRE WEIGHT = ", whv)
     return pc + phv + plv
+
+
+def CalculatePrice_Py(LVNumberOfTurns, LVFoilHeight, LVFoilThickness, HVWireThickness, HVWireLength, CoreDiameter, CoreLength, NumberOfDuctsLV, NumberOfDuctsHV, printValues=False, circular=False):
+    """Python wrapper that reads current material globals (for batch optimization).
+
+    Unlike the JIT version, this function reads material prices at call time,
+    so it correctly uses updated values set by batch optimizer.
+    """
+    price = CalculatePriceWithMaterials(
+        LVNumberOfTurns, LVFoilHeight, LVFoilThickness, HVWireThickness, HVWireLength,
+        CoreDiameter, CoreLength, NumberOfDuctsLV, NumberOfDuctsHV, circular,
+        materialCore_Price, materialToBeUsedFoil_Density, materialToBeUsedFoil_Price,
+        materialToBeUsedWire_Density, materialToBeUsedWire_Price
+    )
+    if printValues:
+        wc = CalculateCoreWeight(LVNumberOfTurns, LVFoilHeight, LVFoilThickness, HVWireThickness, HVWireLength, CoreDiameter, CoreLength, NumberOfDuctsLV, NumberOfDuctsHV, circular)
+        volumeLV = CalculateVolumeLV(LVNumberOfTurns, LVFoilThickness, CoreDiameter, LVFoilHeight, CoreLength, NumberOfDuctsLV) * 3
+        wlv = CalculateWeightOfVolume(volumeLV, materialToBeUsedFoil_Density)
+        volumeHV = CalculateVolumeHV(LVNumberOfTurns, LVFoilThickness, CoreDiameter, LVFoilHeight, HVWireThickness, HVWireLength, CoreLength, NumberOfDuctsHV, circular) * 3
+        whv = CalculateWeightOfVolume(volumeHV, materialToBeUsedWire_Density)
+        print("CORE WEIGHT = ", wc)
+        print("FOIL WEIGHT = ", wlv)
+        print("WIRE WEIGHT = ", whv)
+    return price
 
 
 # =============================================================================
@@ -5003,8 +5048,8 @@ def _build_result_dict(lv_turns, lv_height, lv_thickness, hv_thickness, hv_lengt
                                   core_length, n_ducts_hv, circular) * 3
     hv_weight = CalculateWeightOfVolume(hv_volume, materialToBeUsedWire_Density)
 
-    # Calculate prices
-    core_price = CalculatePriceOfWeight(core_weight, CorePricePerKg)
+    # Calculate prices using current material prices (may have been changed for batch)
+    core_price = CalculatePriceOfWeight(core_weight, materialCore_Price)
     lv_price = CalculatePriceOfWeight(lv_weight, materialToBeUsedFoil_Price)
     hv_price = CalculatePriceOfWeight(hv_weight, materialToBeUsedWire_Price)
 

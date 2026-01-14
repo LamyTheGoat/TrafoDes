@@ -247,6 +247,8 @@ def run_batch_optimization(
     method: str = 'hybrid',
     depth: str = 'fast',
     tolerance: float = 25,
+    multi_runs: int = 1,
+    loss_target_factor: float = 1.0,
     progress_callback: Optional[Callable[[int, int, str, float], None]] = None,
     lv_material: Optional[MaterialPreset] = None,
     hv_material: Optional[MaterialPreset] = None,
@@ -262,6 +264,8 @@ def run_batch_optimization(
         method: Optimization method ('hybrid', 'de', 'smart', etc.)
         depth: Search depth for hybrid method ('fast', 'normal', 'thorough')
         tolerance: Constraint tolerance percentage
+        multi_runs: Number of DE runs per transformer, picks best result (1=single run)
+        loss_target_factor: Target losses at this fraction of limit (0.95 = target 95% of limit for cheaper designs)
         progress_callback: Optional function(completed, total, current_name, elapsed)
         lv_material: Material preset for LV winding (foil), default Copper
         hv_material: Material preset for HV winding (wire), default Copper
@@ -301,11 +305,15 @@ def run_batch_optimization(
 
             try:
                 # Set module values for this spec
+                # Note: LVRATE expects phase voltage, user inputs line voltage
+                # For Y connection: phase = line / sqrt(3)
                 mainRect.POWERRATING = spec.power
                 mainRect.HVRATE = spec.hv_voltage
-                mainRect.LVRATE = spec.lv_voltage
-                mainRect.GUARANTEED_NO_LOAD_LOSS = spec.nll_limit * 0.98
-                mainRect.GUARANTEED_LOAD_LOSS = spec.ll_limit * 0.98
+                mainRect.LVRATE = spec.lv_voltage / (3 ** 0.5)  # Convert line to phase voltage
+                # Apply loss_target_factor to push design closer to limits (cheaper)
+                # e.g., factor=0.95 means target 95% of limit
+                mainRect.GUARANTEED_NO_LOAD_LOSS = spec.nll_limit * loss_target_factor
+                mainRect.GUARANTEED_LOAD_LOSS = spec.ll_limit * loss_target_factor
                 mainRect.GUARANTEED_UCC = spec.ucc_target
 
                 # Set LV material (foil)
@@ -325,17 +333,27 @@ def run_batch_optimization(
                     mainRect.materialCore_Density = core_material["density"]
                     mainRect.materialCore_Price = core_material["price_per_kg"]
 
-                # Run optimization
-                result = mainRect.StartFast(
-                    tolerance=tolerance,
-                    obround=spec.obround,
-                    put_cooling_ducts=spec.put_cooling_ducts,
-                    method=method,
-                    search_depth=depth,
-                    print_result=False
-                )
+                # Run optimization (multiple runs if multi_runs > 1)
+                best_result = None
+                best_price = float('inf')
 
-                if result is None:
+                for run_idx in range(multi_runs):
+                    result = mainRect.StartFast(
+                        tolerance=tolerance,
+                        obround=spec.obround,
+                        put_cooling_ducts=spec.put_cooling_ducts,
+                        method=method,
+                        search_depth=depth,
+                        print_result=False
+                    )
+
+                    if result is not None:
+                        price = result.get('total_price', float('inf'))
+                        if price < best_price:
+                            best_price = price
+                            best_result = result
+
+                if best_result is None:
                     return BatchResult(
                         spec=spec,
                         result={},
@@ -345,14 +363,15 @@ def run_batch_optimization(
                     )
 
                 # Add spec info to result
-                result['power'] = spec.power
-                result['hv_voltage'] = spec.hv_voltage
-                result['lv_voltage'] = spec.lv_voltage
-                result['name'] = spec.name
+                best_result['power'] = spec.power
+                best_result['hv_voltage'] = spec.hv_voltage
+                best_result['lv_voltage'] = spec.lv_voltage
+                best_result['name'] = spec.name
+                best_result['runs_completed'] = multi_runs
 
                 return BatchResult(
                     spec=spec,
-                    result=result,
+                    result=best_result,
                     elapsed_time=time.time() - start,
                     success=True
                 )
@@ -525,11 +544,13 @@ def _run_single_optimization(power: float, hv_voltage: float, lv_voltage: float,
 
     try:
         # Set module values for this optimization
+        # Note: LVRATE expects phase voltage, user inputs line voltage
+        # For Y connection: phase = line / sqrt(3)
         mainRect.POWERRATING = power
         mainRect.HVRATE = hv_voltage
-        mainRect.LVRATE = lv_voltage
-        mainRect.GUARANTEED_NO_LOAD_LOSS = nll_limit * 0.98
-        mainRect.GUARANTEED_LOAD_LOSS = ll_limit * 0.98
+        mainRect.LVRATE = lv_voltage / (3 ** 0.5)  # Convert line to phase voltage
+        mainRect.GUARANTEED_NO_LOAD_LOSS = nll_limit
+        mainRect.GUARANTEED_LOAD_LOSS = ll_limit
         mainRect.GUARANTEED_UCC = ucc_target
 
         # Set LV material (foil)
@@ -597,18 +618,67 @@ def _binary_search_margin(
     lv_material: Optional[MaterialPreset] = None,
     hv_material: Optional[MaterialPreset] = None,
     core_material: Optional[Dict] = None,
+    loss_tolerance: float = 0.85,
 ) -> Optional[Dict]:
     """
     Binary search to find the tightest loss limits that fit within budget.
     Returns the best result found, or None if nothing fits budget.
+
+    Args:
+        loss_tolerance: How much losses can exceed limits (0.85 = 85% over allowed)
     """
-    # Search range for multiplier: 0.5 (tight) to 3.0 (very loose)
-    # Wider range needed for small transformers where losses scale differently
-    mult_low = 0.5
-    mult_high = 3.0
+    # Search range for multiplier: 0.3 (tight) to 8.0 (very loose)
+    # Very wide range needed for cheap/small transformers where losses scale differently
+    mult_low = 0.3
+    mult_high = 8.0
     best_result = None
     best_margin = -float('inf')
 
+    # First, try the loosest limits to see if ANY solution fits budget
+    result = _run_single_optimization(
+        power, hv_voltage, lv_voltage,
+        guaranteed_nll * mult_high, guaranteed_ll * mult_high, ucc_target,
+        method, depth,
+        lv_material, hv_material, core_material
+    )
+
+    if result is None:
+        return None  # Can't even find a solution with very loose limits
+
+    price = result.get('total_price', float('inf'))
+    if price > max_price:
+        return None  # Even loosest limits don't fit budget
+
+    # We have at least one solution that fits budget, but check if it meets loss limits
+    nll = result.get('no_load_loss', 0)
+    ll = result.get('load_loss', 0)
+    ucc = result.get('impedance', ucc_target)
+    nll_margin = (guaranteed_nll - nll) / guaranteed_nll if guaranteed_nll > 0 else 0
+    ll_margin = (guaranteed_ll - ll) / guaranteed_ll if guaranteed_ll > 0 else 0
+    total_margin = 0.5 * nll_margin + 0.5 * ll_margin
+
+    # Accept if margins are within tolerance (negative margin = over limit)
+    # loss_tolerance=0.10 means allow up to 10% over limit (margin >= -0.10)
+    if nll_margin >= -loss_tolerance and ll_margin >= -loss_tolerance:
+        best_result = {
+            'power': power,
+            'price': price,
+            'design': result,
+            'nll': nll,
+            'll': ll,
+            'nll_margin': nll_margin,
+            'll_margin': ll_margin,
+            'total_margin': total_margin,
+            'ucc': ucc,
+            'multiplier': mult_high,
+        }
+        best_margin = total_margin
+    else:
+        # Solution exceeds tolerance - not valid
+        best_result = None
+        best_margin = -float('inf')
+
+    # Now binary search to find tighter limits that still fit budget
     for _ in range(num_iterations):
         mult_mid = (mult_low + mult_high) / 2
         nll_limit = guaranteed_nll * mult_mid
@@ -629,7 +699,7 @@ def _binary_search_margin(
         price = result.get('total_price', float('inf'))
 
         if price <= max_price:
-            # Fits budget! Calculate margin and try tighter
+            # Fits budget! Calculate margin and check if it meets loss limits
             nll = result.get('no_load_loss', 0)
             ll = result.get('load_loss', 0)
             ucc = result.get('impedance', ucc_target)
@@ -638,7 +708,8 @@ def _binary_search_margin(
             ll_margin = (guaranteed_ll - ll) / guaranteed_ll if guaranteed_ll > 0 else 0
             total_margin = 0.5 * nll_margin + 0.5 * ll_margin
 
-            if total_margin > best_margin:
+            # Accept if margins are within tolerance and better than previous
+            if nll_margin >= -loss_tolerance and ll_margin >= -loss_tolerance and total_margin > best_margin:
                 best_margin = total_margin
                 best_result = {
                     'power': power,
@@ -668,13 +739,14 @@ def run_inverse_optimization(
     power_max: float,
     hv_voltage: float = 33000,
     lv_voltage: float = 400,
-    nll_limit_scale: float = 2.0,
-    ll_limit_scale: float = 10.0,
+    nll_limit_scale: float = 10.0,   # Very loose limits for cheapest designs
+    ll_limit_scale: float = 50.0,   # Very loose limits for cheapest designs
     ucc_target: float = 6.0,
     price_tolerance: float = 0.05,
     power_step: float = 25,
     method: str = 'de',
     depth: str = 'fast',
+    loss_tolerance: float = 0.85,
     progress_callback: Optional[Callable[[int, int, float, str], None]] = None,
     lv_material: Optional[MaterialPreset] = None,
     hv_material: Optional[MaterialPreset] = None,
@@ -714,125 +786,60 @@ def run_inverse_optimization(
     max_price = target_price * (1 + price_tolerance)
     candidates_evaluated = 0
 
-    # Phase 1: First verify minimum power works (establishes baseline)
+    # Full scan approach: Cost is NOT monotonic with power at high voltages
+    # (small transformers can be more expensive than larger ones due to insulation costs)
+    # So we scan ALL power levels and keep track of the HIGHEST power that fits budget
     if progress_callback:
-        progress_callback(1, 4, power_min, "Testing minimum power...")
+        progress_callback(1, 4, power_min, "Scanning all power levels...")
 
-    guaranteed_nll = power_min * nll_limit_scale
-    guaranteed_ll = power_min * ll_limit_scale
+    best_power_result = None
+    best_power = 0
 
-    min_power_result = _binary_search_margin(
-        power=power_min,
-        hv_voltage=hv_voltage,
-        lv_voltage=lv_voltage,
-        guaranteed_nll=guaranteed_nll,
-        guaranteed_ll=guaranteed_ll,
-        ucc_target=ucc_target,
-        max_price=max_price,
-        method=method,
-        depth=depth,
-        num_iterations=8,  # More iterations for reliability
-        lv_material=lv_material,
-        hv_material=hv_material,
-        core_material=core_material,
-    )
-    candidates_evaluated += 8
+    # Scan ALL power levels from min to max
+    power_levels = list(range(int(power_min), int(power_max) + 1, int(power_step)))
+    total_levels = len(power_levels)
 
-    if min_power_result is None:
-        # Can't even build minimum power within budget
-        return InverseResult(
-            power=0, price=0, design={}, nll=0, ll=0,
-            nll_margin=0, ll_margin=0, total_margin=0, ucc=0,
-            success=False,
-            message=f"Budget ${target_price:.0f} too low for {power_min:.0f} kVA transformer",
-            candidates_evaluated=candidates_evaluated
+    for i, test_power in enumerate(power_levels):
+        if progress_callback:
+            progress_callback(1, 4, test_power, f"Testing {test_power:.0f} kVA ({i+1}/{total_levels})...")
+
+        guaranteed_nll = test_power * nll_limit_scale
+        guaranteed_ll = test_power * ll_limit_scale
+
+        result = _binary_search_margin(
+            power=test_power,
+            hv_voltage=hv_voltage,
+            lv_voltage=lv_voltage,
+            guaranteed_nll=guaranteed_nll,
+            guaranteed_ll=guaranteed_ll,
+            ucc_target=ucc_target,
+            max_price=max_price,
+            method=method,
+            depth=depth,
+            num_iterations=4,  # Fewer iterations since we're scanning more levels
+            lv_material=lv_material,
+            hv_material=hv_material,
+            core_material=core_material,
+            loss_tolerance=loss_tolerance,
         )
+        candidates_evaluated += 4
 
-    best_power_result = min_power_result
-
-    # Phase 2: Binary search for maximum power that fits budget
-    if progress_callback:
-        progress_callback(2, 4, power_max, "Finding maximum power...")
-
-    # Check if max power fits (best case)
-    guaranteed_nll = power_max * nll_limit_scale
-    guaranteed_ll = power_max * ll_limit_scale
-
-    result = _binary_search_margin(
-        power=power_max,
-        hv_voltage=hv_voltage,
-        lv_voltage=lv_voltage,
-        guaranteed_nll=guaranteed_nll,
-        guaranteed_ll=guaranteed_ll,
-        ucc_target=ucc_target,
-        max_price=max_price,
-        method=method,
-        depth=depth,
-        num_iterations=6,
-        lv_material=lv_material,
-        hv_material=hv_material,
-        core_material=core_material,
-    )
-    candidates_evaluated += 6
-
-    if result is not None:
-        # Max power fits! Use it
-        best_power_result = result
-    else:
-        # Binary search for highest power that fits
-        power_low = power_min
-        power_high = power_max
-        iterations = 0
-        max_iterations = 8
-
-        while power_high - power_low > power_step / 2 and iterations < max_iterations:
-            iterations += 1
-            power_mid = (power_low + power_high) / 2
-            # Round to nearest step
-            power_mid = round(power_mid / power_step) * power_step
-            power_mid = max(power_min, min(power_max, power_mid))
-
-            if progress_callback:
-                progress_callback(2, 4, power_mid, f"Testing {power_mid:.0f} kVA...")
-
-            guaranteed_nll = power_mid * nll_limit_scale
-            guaranteed_ll = power_mid * ll_limit_scale
-
-            result = _binary_search_margin(
-                power=power_mid,
-                hv_voltage=hv_voltage,
-                lv_voltage=lv_voltage,
-                guaranteed_nll=guaranteed_nll,
-                guaranteed_ll=guaranteed_ll,
-                ucc_target=ucc_target,
-                max_price=max_price,
-                method=method,
-                depth=depth,
-                num_iterations=5,
-                lv_material=lv_material,
-                hv_material=hv_material,
-                core_material=core_material,
-            )
-            candidates_evaluated += 5
-
-            if result is not None:
-                # This power fits, try higher
-                best_power_result = result
-                power_low = power_mid + power_step
-            else:
-                # Doesn't fit, try lower
-                power_high = power_mid - power_step
+        if result is not None and test_power > best_power:
+            # Found a working power level that's higher than previous best!
+            best_power = test_power
+            best_power_result = result
 
     if best_power_result is None:
+        # Couldn't find any power level that fits budget
         return InverseResult(
             power=0, price=0, design={}, nll=0, ll=0,
             nll_margin=0, ll_margin=0, total_margin=0, ucc=0,
             success=False,
-            message=f"No design found within budget ${target_price:.0f}",
+            message=f"No valid design found in range {power_min:.0f}-{power_max:.0f} kVA for budget ${target_price:.0f}",
             candidates_evaluated=candidates_evaluated
         )
 
-    # Phase 3: Fine-tune power around best found
+    # Phase 2: Fine-tune power around best found
     best_power = best_power_result['power']
     fine_step = power_step / 4
 
@@ -862,6 +869,7 @@ def run_inverse_optimization(
             lv_material=lv_material,
             hv_material=hv_material,
             core_material=core_material,
+            loss_tolerance=loss_tolerance,
         )
         candidates_evaluated += 5
 
@@ -882,10 +890,11 @@ def run_inverse_optimization(
         progress_callback(4, 4, final_power, "Optimizing margin at best power...")
 
     # Run with better depth for final result
-    best_mult = best_power_result.get('multiplier', 0.8)
+    best_mult = best_power_result.get('multiplier', 1.0)
 
-    for mult in [best_mult - 0.05, best_mult, best_mult + 0.05]:
-        if mult < 0.4 or mult > 1.2:
+    # Try multipliers around the best found, with wider range for loose specs
+    for mult in [best_mult - 0.1, best_mult, best_mult + 0.1]:
+        if mult < 0.3 or mult > 8.0:
             continue
 
         nll_limit = guaranteed_nll * mult
