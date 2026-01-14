@@ -48,6 +48,24 @@ def resource_path(relative_path):
 import mainRect
 import tank_oil
 
+# Import batch and export utilities
+try:
+    from batch_optimizer import (
+        TransformerSpec, run_batch_optimization,
+        parse_specs_from_csv, generate_parametric_sweep,
+        batch_results_to_dataframe, TEMPLATE_CSV
+    )
+    from export_utils import export_csv, export_excel, export_json, export_pdf
+    BATCH_AVAILABLE = True
+    print("Batch optimization and export modules loaded successfully")
+except ImportError as e:
+    print(f"Batch/Export modules not available: {e}")
+    print(f"  Working directory: {os.getcwd()}")
+    print(f"  Script directory: {os.path.dirname(os.path.abspath(__file__))}")
+    import traceback
+    traceback.print_exc()
+    BATCH_AVAILABLE = False
+
 
 class ConsoleCapture:
     """Captures stdout/stderr and stores it for later display.
@@ -114,7 +132,7 @@ class TransformerOptimizerApp:
         self.console_queue = Queue(maxsize=1000)  # Thread-safe queue for console output
 
         dpg.create_context()
-        dpg.create_viewport(title="Transformer Design Optimizer", width=1100, height=850)
+        dpg.create_viewport(title="Transformer Design Optimizer", width=1200, height=850)
 
         self._setup_fonts()
         self._setup_theme()
@@ -196,19 +214,19 @@ class TransformerOptimizerApp:
             dpg.add_spacer(height=4)
 
             # Tab bar for main content
-            with dpg.tab_bar(tag="main_tabs"):
+            with dpg.tab_bar(tag="main_tabs", reorderable=True):
                 # Main Optimization tab
                 with dpg.tab(label=" Optimization "):
                     dpg.add_spacer(height=4)
                     with dpg.group(horizontal=True):
                         # Left column - Inputs
-                        with dpg.child_window(width=440, height=580, border=True, tag="input_panel"):
+                        with dpg.child_window(width=490, height=580, border=True, tag="input_panel"):
                             self._create_input_panels()
 
                         dpg.add_spacer(width=8)
 
                         # Right column - Results
-                        with dpg.child_window(width=440, height=580, border=True, tag="results_panel"):
+                        with dpg.child_window(width=490, height=580, border=True, tag="results_panel"):
                             self._create_results_panel()
 
                 # Advanced Materials tab
@@ -220,6 +238,21 @@ class TransformerOptimizerApp:
                 with dpg.tab(label=" Console Output "):
                     dpg.add_spacer(height=4)
                     self._create_console_panel()
+
+                # Batch Optimization tab - always create for testing
+                with dpg.tab(label=" Batch "):
+                    dpg.add_spacer(height=4)
+                    if BATCH_AVAILABLE:
+                        try:
+                            self._create_batch_panel()
+                            print("[DEBUG] Batch panel created successfully")
+                        except Exception as e:
+                            dpg.add_text(f"Error loading batch panel: {e}", color=(255, 100, 100))
+                            print(f"[ERROR] Creating batch panel: {e}")
+                    else:
+                        dpg.add_text("Batch optimization not available.", color=(255, 200, 100))
+                        dpg.add_text("Check that batch_optimizer.py and export_utils.py exist.")
+                        print("[DEBUG] BATCH_AVAILABLE = False")
 
             dpg.add_spacer(height=8)
 
@@ -732,6 +765,391 @@ class TransformerOptimizerApp:
                 pyperclip.copy(text)
             except Exception:
                 pass  # Ignore if copy fails
+
+    def _create_batch_panel(self):
+        """Create batch optimization panel."""
+        # Initialize batch state
+        self.batch_specs = []
+        self.batch_results = []
+        self.is_batch_optimizing = False
+
+        with dpg.group(horizontal=True):
+            # Left column - Input
+            with dpg.child_window(width=580, height=560, border=True):
+                dpg.add_text(" BATCH INPUT", color=(100, 165, 255))
+                dpg.add_separator()
+
+                # Input method tabs
+                with dpg.tab_bar(tag="batch_input_tabs"):
+                    # Manual input tab
+                    with dpg.tab(label=" Manual "):
+                        dpg.add_spacer(height=4)
+                        dpg.add_text("Enter specifications:", color=(140, 145, 165))
+
+                        # Table for batch specs
+                        with dpg.table(tag="batch_specs_table", header_row=True,
+                                      borders_innerH=True, borders_outerH=True,
+                                      borders_innerV=True, borders_outerV=True,
+                                      row_background=True, scrollY=True, height=280):
+                            dpg.add_table_column(label="Name", width_fixed=True, init_width_or_weight=80)
+                            dpg.add_table_column(label="Power", width_fixed=True, init_width_or_weight=60)
+                            dpg.add_table_column(label="HV (V)", width_fixed=True, init_width_or_weight=70)
+                            dpg.add_table_column(label="LV (V)", width_fixed=True, init_width_or_weight=60)
+                            dpg.add_table_column(label="NLL (W)", width_fixed=True, init_width_or_weight=65)
+                            dpg.add_table_column(label="LL (W)", width_fixed=True, init_width_or_weight=65)
+
+                        dpg.add_spacer(height=8)
+
+                        # Add row inputs
+                        dpg.add_text("Add new specification:", color=(140, 145, 165))
+                        with dpg.group(horizontal=True):
+                            dpg.add_input_text(tag="batch_new_name", width=80, default_value="Trafo-1")
+                            dpg.add_input_int(tag="batch_new_power", width=60, default_value=400)
+                            dpg.add_input_int(tag="batch_new_hv", width=70, default_value=33000)
+                            dpg.add_input_int(tag="batch_new_lv", width=60, default_value=400)
+                            dpg.add_input_int(tag="batch_new_nll", width=65, default_value=600)
+                            dpg.add_input_int(tag="batch_new_ll", width=65, default_value=4500)
+
+                        with dpg.group(horizontal=True):
+                            dpg.add_button(label=" Add Row ", callback=self._add_batch_row, width=100)
+                            dpg.add_button(label=" Clear All ", callback=self._clear_batch_specs, width=100)
+
+                    # CSV input tab
+                    with dpg.tab(label=" CSV Import "):
+                        dpg.add_spacer(height=4)
+                        dpg.add_text("Paste CSV content below:", color=(140, 145, 165))
+                        dpg.add_text("Format: name,power,hv_voltage,lv_voltage,nll_limit,ll_limit",
+                                    color=(100, 105, 125))
+
+                        dpg.add_input_text(tag="batch_csv_input", multiline=True, width=-1, height=250,
+                                          default_value=TEMPLATE_CSV if BATCH_AVAILABLE else "")
+
+                        with dpg.group(horizontal=True):
+                            dpg.add_button(label=" Parse CSV ", callback=self._parse_csv_input, width=120)
+                            dpg.add_button(label=" Load Template ", callback=self._load_csv_template, width=120)
+
+                    # Parametric sweep tab
+                    with dpg.tab(label=" Parametric Sweep "):
+                        dpg.add_spacer(height=4)
+                        dpg.add_text("Generate specs by sweeping power:", color=(140, 145, 165))
+
+                        dpg.add_input_text(label="Power values (kVA)", tag="batch_sweep_powers",
+                                          default_value="250, 400, 630, 1000", width=250)
+                        dpg.add_input_int(label="HV Voltage (V)", tag="batch_sweep_hv",
+                                         default_value=33000, width=140)
+                        dpg.add_input_int(label="LV Voltage (V)", tag="batch_sweep_lv",
+                                         default_value=400, width=140)
+
+                        dpg.add_spacer(height=4)
+                        dpg.add_text("Loss scaling (W per kVA):", color=(140, 145, 165))
+                        dpg.add_input_float(label="NLL Scale", tag="batch_sweep_nll_scale",
+                                           default_value=2.0, width=100, format="%.1f")
+                        dpg.add_input_float(label="LL Scale", tag="batch_sweep_ll_scale",
+                                           default_value=10.0, width=100, format="%.1f")
+
+                        dpg.add_spacer(height=8)
+                        dpg.add_button(label=" Generate Specs ", callback=self._generate_sweep_specs, width=140)
+
+                dpg.add_spacer(height=8)
+
+                # Batch run controls
+                dpg.add_separator()
+                dpg.add_text(f"Specs loaded: 0", tag="batch_spec_count", color=(120, 200, 160))
+
+                with dpg.group(horizontal=True):
+                    dpg.add_button(label=" Run Batch Optimization ", tag="batch_run_btn",
+                                  callback=self._run_batch_optimization, width=180, height=32)
+
+                    dpg.add_combo(["DE (Fast)", "Hybrid (Quality)"], tag="batch_method",
+                                 default_value="DE (Fast)", width=130)
+
+                dpg.add_progress_bar(tag="batch_progress", default_value=0.0, width=-1)
+                dpg.add_text("Ready", tag="batch_status", color=(120, 125, 145))
+
+            dpg.add_spacer(width=8)
+
+            # Right column - Results and Export
+            with dpg.child_window(width=400, height=560, border=True):
+                dpg.add_text(" BATCH RESULTS", color=(100, 165, 255))
+                dpg.add_separator()
+
+                # Results table
+                with dpg.table(tag="batch_results_table", header_row=True,
+                              borders_innerH=True, borders_outerH=True,
+                              borders_innerV=True, borders_outerV=True,
+                              row_background=True, scrollY=True, height=350):
+                    dpg.add_table_column(label="Name", width_fixed=True, init_width_or_weight=80)
+                    dpg.add_table_column(label="Price ($)", width_fixed=True, init_width_or_weight=70)
+                    dpg.add_table_column(label="NLL (W)", width_fixed=True, init_width_or_weight=65)
+                    dpg.add_table_column(label="LL (W)", width_fixed=True, init_width_or_weight=65)
+                    dpg.add_table_column(label="Status", width_fixed=True, init_width_or_weight=60)
+
+                dpg.add_spacer(height=8)
+
+                # Export section
+                dpg.add_text(" EXPORT RESULTS", color=(100, 165, 255))
+                dpg.add_separator()
+                dpg.add_spacer(height=4)
+
+                with dpg.group(horizontal=True):
+                    dpg.add_button(label=" CSV ", callback=lambda: self._export_batch_results('csv'),
+                                  width=70, height=28)
+                    dpg.add_button(label=" Excel ", callback=lambda: self._export_batch_results('excel'),
+                                  width=70, height=28)
+                    dpg.add_button(label=" JSON ", callback=lambda: self._export_batch_results('json'),
+                                  width=70, height=28)
+                    dpg.add_button(label=" PDF ", callback=lambda: self._export_batch_results('pdf'),
+                                  width=70, height=28)
+
+                dpg.add_spacer(height=8)
+                dpg.add_text("", tag="batch_export_status", color=(120, 200, 160))
+
+                dpg.add_spacer(height=8)
+                dpg.add_button(label=" Clear Results ", callback=self._clear_batch_results, width=120)
+
+    def _add_batch_row(self):
+        """Add a row to batch specifications."""
+        if not BATCH_AVAILABLE:
+            return
+
+        name = dpg.get_value("batch_new_name")
+        power = dpg.get_value("batch_new_power")
+        hv = dpg.get_value("batch_new_hv")
+        lv = dpg.get_value("batch_new_lv")
+        nll = dpg.get_value("batch_new_nll")
+        ll = dpg.get_value("batch_new_ll")
+
+        spec = TransformerSpec(
+            name=name,
+            power=float(power),
+            hv_voltage=float(hv),
+            lv_voltage=float(lv),
+            nll_limit=float(nll),
+            ll_limit=float(ll),
+            ucc_target=6.0
+        )
+        self.batch_specs.append(spec)
+
+        # Add to table
+        with dpg.table_row(parent="batch_specs_table"):
+            dpg.add_text(name)
+            dpg.add_text(str(power))
+            dpg.add_text(str(hv))
+            dpg.add_text(str(lv))
+            dpg.add_text(str(nll))
+            dpg.add_text(str(ll))
+
+        # Update counter and auto-increment name
+        dpg.set_value("batch_spec_count", f"Specs loaded: {len(self.batch_specs)}")
+        next_num = len(self.batch_specs) + 1
+        dpg.set_value("batch_new_name", f"Trafo-{next_num}")
+
+    def _clear_batch_specs(self):
+        """Clear all batch specifications."""
+        self.batch_specs = []
+        dpg.delete_item("batch_specs_table", children_only=True)
+
+        # Re-add header columns
+        dpg.add_table_column(label="Name", width_fixed=True, init_width_or_weight=80, parent="batch_specs_table")
+        dpg.add_table_column(label="Power", width_fixed=True, init_width_or_weight=60, parent="batch_specs_table")
+        dpg.add_table_column(label="HV (V)", width_fixed=True, init_width_or_weight=70, parent="batch_specs_table")
+        dpg.add_table_column(label="LV (V)", width_fixed=True, init_width_or_weight=60, parent="batch_specs_table")
+        dpg.add_table_column(label="NLL (W)", width_fixed=True, init_width_or_weight=65, parent="batch_specs_table")
+        dpg.add_table_column(label="LL (W)", width_fixed=True, init_width_or_weight=65, parent="batch_specs_table")
+
+        dpg.set_value("batch_spec_count", "Specs loaded: 0")
+
+    def _load_csv_template(self):
+        """Load CSV template into input."""
+        if BATCH_AVAILABLE:
+            dpg.set_value("batch_csv_input", TEMPLATE_CSV)
+
+    def _parse_csv_input(self):
+        """Parse CSV input and load specs."""
+        if not BATCH_AVAILABLE:
+            return
+
+        csv_content = dpg.get_value("batch_csv_input")
+        try:
+            self.batch_specs = parse_specs_from_csv(csv_content)
+
+            # Clear and repopulate table
+            self._clear_batch_specs()
+            for spec in self.batch_specs:
+                with dpg.table_row(parent="batch_specs_table"):
+                    dpg.add_text(spec.name)
+                    dpg.add_text(f"{spec.power:.0f}")
+                    dpg.add_text(f"{spec.hv_voltage:.0f}")
+                    dpg.add_text(f"{spec.lv_voltage:.0f}")
+                    dpg.add_text(f"{spec.nll_limit:.0f}")
+                    dpg.add_text(f"{spec.ll_limit:.0f}")
+
+            dpg.set_value("batch_spec_count", f"Specs loaded: {len(self.batch_specs)}")
+            dpg.set_value("batch_status", f"Parsed {len(self.batch_specs)} specs from CSV")
+
+        except Exception as e:
+            dpg.set_value("batch_status", f"CSV Error: {str(e)[:50]}")
+
+    def _generate_sweep_specs(self):
+        """Generate specs from parametric sweep."""
+        if not BATCH_AVAILABLE:
+            return
+
+        try:
+            power_str = dpg.get_value("batch_sweep_powers")
+            power_values = [float(p.strip()) for p in power_str.split(',')]
+
+            self.batch_specs = generate_parametric_sweep(
+                power_values=power_values,
+                hv_voltage=float(dpg.get_value("batch_sweep_hv")),
+                lv_voltage=float(dpg.get_value("batch_sweep_lv")),
+                nll_scale=dpg.get_value("batch_sweep_nll_scale"),
+                ll_scale=dpg.get_value("batch_sweep_ll_scale"),
+                ucc_target=6.0
+            )
+
+            # Clear and repopulate table
+            self._clear_batch_specs()
+            for spec in self.batch_specs:
+                with dpg.table_row(parent="batch_specs_table"):
+                    dpg.add_text(spec.name)
+                    dpg.add_text(f"{spec.power:.0f}")
+                    dpg.add_text(f"{spec.hv_voltage:.0f}")
+                    dpg.add_text(f"{spec.lv_voltage:.0f}")
+                    dpg.add_text(f"{spec.nll_limit:.0f}")
+                    dpg.add_text(f"{spec.ll_limit:.0f}")
+
+            dpg.set_value("batch_spec_count", f"Specs loaded: {len(self.batch_specs)}")
+            dpg.set_value("batch_status", f"Generated {len(self.batch_specs)} specs")
+
+        except Exception as e:
+            dpg.set_value("batch_status", f"Sweep Error: {str(e)[:50]}")
+
+    def _run_batch_optimization(self):
+        """Run batch optimization."""
+        if not BATCH_AVAILABLE or self.is_batch_optimizing:
+            return
+
+        if not self.batch_specs:
+            dpg.set_value("batch_status", "No specs loaded!")
+            return
+
+        self.is_batch_optimizing = True
+        dpg.configure_item("batch_run_btn", enabled=False)
+        dpg.set_value("batch_progress", 0.0)
+        dpg.set_value("batch_status", "Starting batch optimization...")
+
+        # Clear results table
+        self._clear_batch_results_table()
+
+        # Get method
+        method_str = dpg.get_value("batch_method")
+        method = 'de' if "DE" in method_str else 'hybrid'
+        depth = 'fast'
+
+        def progress_callback(completed, total, name, elapsed):
+            try:
+                dpg.set_value("batch_progress", completed / total)
+                dpg.set_value("batch_status", f"Completed: {name} ({completed}/{total})")
+            except:
+                pass
+
+        def run_batch():
+            try:
+                results = run_batch_optimization(
+                    self.batch_specs,
+                    parallel=False,  # Sequential for stability
+                    method=method,
+                    depth=depth,
+                    tolerance=25,
+                    progress_callback=progress_callback
+                )
+
+                self.batch_results = results
+
+                # Populate results table
+                for r in results:
+                    with dpg.table_row(parent="batch_results_table"):
+                        dpg.add_text(r.spec.name)
+                        if r.success and r.result:
+                            dpg.add_text(f"{r.result.get('total_price', 0):.0f}")
+                            dpg.add_text(f"{r.result.get('no_load_loss', 0):.0f}")
+                            dpg.add_text(f"{r.result.get('load_loss', 0):.0f}")
+                            dpg.add_text("OK", color=(72, 199, 142))
+                        else:
+                            dpg.add_text("-")
+                            dpg.add_text("-")
+                            dpg.add_text("-")
+                            dpg.add_text("FAIL", color=(255, 99, 99))
+
+                dpg.set_value("batch_progress", 1.0)
+                dpg.set_value("batch_status", f"Completed {len(results)} optimizations!")
+
+            except Exception as e:
+                dpg.set_value("batch_status", f"Error: {str(e)[:50]}")
+
+            finally:
+                self.is_batch_optimizing = False
+                dpg.configure_item("batch_run_btn", enabled=True)
+
+        # Run in thread
+        batch_thread = threading.Thread(target=run_batch, daemon=True)
+        batch_thread.start()
+
+    def _clear_batch_results_table(self):
+        """Clear the results table."""
+        dpg.delete_item("batch_results_table", children_only=True)
+
+        # Re-add columns
+        dpg.add_table_column(label="Name", width_fixed=True, init_width_or_weight=80, parent="batch_results_table")
+        dpg.add_table_column(label="Price ($)", width_fixed=True, init_width_or_weight=70, parent="batch_results_table")
+        dpg.add_table_column(label="NLL (W)", width_fixed=True, init_width_or_weight=65, parent="batch_results_table")
+        dpg.add_table_column(label="LL (W)", width_fixed=True, init_width_or_weight=65, parent="batch_results_table")
+        dpg.add_table_column(label="Status", width_fixed=True, init_width_or_weight=60, parent="batch_results_table")
+
+    def _clear_batch_results(self):
+        """Clear batch results."""
+        self.batch_results = []
+        self._clear_batch_results_table()
+        dpg.set_value("batch_export_status", "")
+
+    def _export_batch_results(self, format_type: str):
+        """Export batch results to file."""
+        if not self.batch_results:
+            dpg.set_value("batch_export_status", "No results to export!")
+            return
+
+        # Convert results to export format
+        export_data = [r.to_dict() for r in self.batch_results]
+
+        # Generate filename with timestamp
+        import datetime
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        base_name = f"batch_results_{timestamp}"
+
+        try:
+            if format_type == 'csv':
+                filepath = f"{base_name}.csv"
+                export_csv(export_data, filepath)
+                dpg.set_value("batch_export_status", f"Saved: {filepath}")
+
+            elif format_type == 'excel':
+                filepath = f"{base_name}.xlsx"
+                export_excel(export_data, filepath)
+                dpg.set_value("batch_export_status", f"Saved: {filepath}")
+
+            elif format_type == 'json':
+                filepath = f"{base_name}.json"
+                export_json(export_data, filepath)
+                dpg.set_value("batch_export_status", f"Saved: {filepath}")
+
+            elif format_type == 'pdf':
+                filepath = f"{base_name}.pdf"
+                export_pdf(export_data, filepath)
+                dpg.set_value("batch_export_status", f"Saved: {filepath}")
+
+        except Exception as e:
+            dpg.set_value("batch_export_status", f"Export error: {str(e)[:40]}")
 
     def _create_results_panel(self):
         """Create the results display panel."""
