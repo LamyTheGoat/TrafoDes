@@ -248,7 +248,6 @@ def run_batch_optimization(
     depth: str = 'fast',
     tolerance: float = 25,
     multi_runs: int = 1,
-    loss_target_factor: float = 1.0,
     progress_callback: Optional[Callable[[int, int, str, float], None]] = None,
     lv_material: Optional[MaterialPreset] = None,
     hv_material: Optional[MaterialPreset] = None,
@@ -265,7 +264,6 @@ def run_batch_optimization(
         depth: Search depth for hybrid method ('fast', 'normal', 'thorough')
         tolerance: Constraint tolerance percentage
         multi_runs: Number of DE runs per transformer, picks best result (1=single run)
-        loss_target_factor: Target losses at this fraction of limit (0.95 = target 95% of limit for cheaper designs)
         progress_callback: Optional function(completed, total, current_name, elapsed)
         lv_material: Material preset for LV winding (foil), default Copper
         hv_material: Material preset for HV winding (wire), default Copper
@@ -310,10 +308,8 @@ def run_batch_optimization(
                 mainRect.POWERRATING = spec.power
                 mainRect.HVRATE = spec.hv_voltage
                 mainRect.LVRATE = spec.lv_voltage / (3 ** 0.5)  # Convert line to phase voltage
-                # Apply loss_target_factor to push design closer to limits (cheaper)
-                # e.g., factor=0.95 means target 95% of limit
-                mainRect.GUARANTEED_NO_LOAD_LOSS = spec.nll_limit * loss_target_factor
-                mainRect.GUARANTEED_LOAD_LOSS = spec.ll_limit * loss_target_factor
+                mainRect.GUARANTEED_NO_LOAD_LOSS = spec.nll_limit
+                mainRect.GUARANTEED_LOAD_LOSS = spec.ll_limit
                 mainRect.GUARANTEED_UCC = spec.ucc_target
 
                 # Set LV material (foil)

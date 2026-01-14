@@ -895,9 +895,6 @@ class TransformerOptimizerApp:
                     dpg.add_combo(["1x", "3x (Best of 3)", "5x (Best of 5)"], tag="batch_multi_runs",
                                  default_value="1x", label="Runs", width=110)
 
-                    dpg.add_combo(["100% (Tight)", "105% (Normal)", "110% (Relaxed)"], tag="batch_loss_target",
-                                 default_value="105% (Normal)", label="Loss Target", width=140)
-
                 dpg.add_progress_bar(tag="batch_progress", default_value=0.0, width=-1)
                 dpg.add_text("Ready", tag="batch_status", color=(120, 125, 145))
 
@@ -1091,15 +1088,6 @@ class TransformerOptimizerApp:
         else:
             multi_runs = 1
 
-        # Get loss target factor (looser internal limits = cheaper designs closer to actual limit)
-        loss_target_str = dpg.get_value("batch_loss_target")
-        if "110%" in loss_target_str:
-            loss_target_factor = 1.10  # Most relaxed - cheapest
-        elif "105%" in loss_target_str:
-            loss_target_factor = 1.05  # Normal - balanced
-        else:
-            loss_target_factor = 1.0   # Tight - most margin
-
         # Get selected materials
         lv_mat_name = dpg.get_value("batch_lv_material")
         hv_mat_name = dpg.get_value("batch_hv_material")
@@ -1125,7 +1113,6 @@ class TransformerOptimizerApp:
                     depth=depth,
                     tolerance=25,
                     multi_runs=multi_runs,
-                    loss_target_factor=loss_target_factor,
                     progress_callback=progress_callback,
                     lv_material=lv_material,
                     hv_material=hv_material,
