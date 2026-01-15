@@ -25,7 +25,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install dearpygui numpy scipy numba pyinstaller playsound3
+          pip install dearpygui numpy scipy numba pandas pyinstaller playsound3
           pip install torch --index-url https://download.pytorch.org/whl/cpu
 
       - name: Set expiration date
