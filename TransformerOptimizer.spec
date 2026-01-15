@@ -174,7 +174,7 @@ else:
         upx=False,  # Disabled - UPX can cause issues with some libraries
         upx_exclude=[],
         runtime_tmpdir=None,
-        console=False,  # No console window
+        console=True,  # No console window
         disable_windowed_traceback=False,
         argv_emulation=False,
         target_arch=None,
