@@ -8,6 +8,32 @@ on:
         required: true
         default: '7'
         type: string
+      build_type:
+        description: 'Build type'
+        required: true
+        default: 'release'
+        type: choice
+        options:
+          - release
+          - debug
+      include_ml:
+        description: 'Include ML training dependencies'
+        required: false
+        default: false
+        type: boolean
+      pytorch_variant:
+        description: 'PyTorch variant (CPU=smaller ~200MB, CUDA=larger ~2GB but GPU support)'
+        required: true
+        default: 'cpu'
+        type: choice
+        options:
+          - cpu
+          - cuda-11.8
+          - cuda-12.1
+          - cuda-12.4
+
+env:
+  PYTHON_VERSION: '3.10'
 
 jobs:
   build-windows:
@@ -20,13 +46,95 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
 
-      - name: Install dependencies
+      - name: Cache pip dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~\AppData\Local\pip\Cache
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install core dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install dearpygui numpy scipy numba pyinstaller playsound3
+          python -m pip install --upgrade pip setuptools wheel
+
+          # Core GUI and computation
+          pip install dearpygui>=1.11
+          pip install numpy>=1.24
+          pip install scipy>=1.10
+          pip install numba>=0.57
+
+          # Audio
+          pip install playsound3>=2.0
+
+          # CAD export
+          pip install ezdxf>=1.0
+
+          # Batch optimization and export
+          pip install pandas>=2.0
+          pip install openpyxl>=3.0
+          pip install reportlab>=3.6
+
+          # ML inference dependencies
+          pip install h5py>=3.8
+          pip install scikit-learn>=1.2
+
+          # Build tools
+          pip install pyinstaller>=6.0
+
+      - name: Install PyTorch (CPU only)
+        if: ${{ github.event.inputs.pytorch_variant == 'cpu' }}
+        run: |
           pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Install PyTorch (CUDA 11.8)
+        if: ${{ github.event.inputs.pytorch_variant == 'cuda-11.8' }}
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cu118
+
+      - name: Install PyTorch (CUDA 12.1)
+        if: ${{ github.event.inputs.pytorch_variant == 'cuda-12.1' }}
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cu121
+
+      - name: Install PyTorch (CUDA 12.4)
+        if: ${{ github.event.inputs.pytorch_variant == 'cuda-12.4' }}
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cu124
+
+      - name: Install ML training dependencies (optional)
+        if: ${{ github.event.inputs.include_ml == 'true' }}
+        run: |
+          pip install gymnasium>=0.29
+          pip install stable-baselines3>=2.0
+          pip install optuna>=3.0
+
+      - name: Verify dependencies
+        run: |
+          python -c "
+          import sys
+          print(f'Python: {sys.version}')
+
+          deps = [
+              'dearpygui', 'numpy', 'scipy', 'numba', 'torch',
+              'playsound3', 'ezdxf', 'pandas', 'openpyxl',
+              'reportlab', 'h5py', 'sklearn', 'PyInstaller'
+          ]
+
+          for dep in deps:
+              try:
+                  mod = __import__(dep)
+                  ver = getattr(mod, '__version__', 'unknown')
+                  print(f'{dep}: {ver}')
+              except ImportError as e:
+                  print(f'{dep}: MISSING - {e}')
+                  sys.exit(1)
+
+          print('All dependencies verified!')
+          "
 
       - name: Set expiration date
         run: |
@@ -37,26 +145,90 @@ jobs:
           days = int('${{ github.event.inputs.expiration_days }}')
           exp_date = datetime.date.today() + datetime.timedelta(days=days)
 
-          with open('launcher.py', 'r') as f:
+          with open('launcher.py', 'r', encoding='utf-8') as f:
               content = f.read()
 
           pattern = r'EXPIRATION_DATE = datetime\.date\(\d+, \d+, \d+\)'
           replacement = f'EXPIRATION_DATE = datetime.date({exp_date.year}, {exp_date.month}, {exp_date.day})'
           content = re.sub(pattern, replacement, content)
 
-          with open('launcher.py', 'w') as f:
+          with open('launcher.py', 'w', encoding='utf-8') as f:
               f.write(content)
 
           print(f'Set expiration date to: {exp_date}')
+          print(f'Build will expire in {days} days')
           "
+
+      - name: Generate build info
+        id: build_info
+        run: |
+          $date = Get-Date -Format "yyyy-MM-dd"
+          $short_sha = "${{ github.sha }}".Substring(0, 7)
+          echo "build_date=$date" >> $env:GITHUB_OUTPUT
+          echo "short_sha=$short_sha" >> $env:GITHUB_OUTPUT
+          echo "Build date: $date"
+          echo "Commit: $short_sha"
 
       - name: Build with PyInstaller
         run: |
-          pyinstaller TransformerOptimizer.spec --clean
+          pyinstaller TransformerOptimizer.spec --clean --noconfirm
+        env:
+          PYINSTALLER_DEBUG: ${{ github.event.inputs.build_type == 'debug' && '1' || '0' }}
+
+      - name: Verify build output
+        run: |
+          if (Test-Path "dist/TransformerOptimizer.exe") {
+              $size = (Get-Item "dist/TransformerOptimizer.exe").Length / 1MB
+              Write-Host "Build successful!"
+              Write-Host "Executable size: $([math]::Round($size, 2)) MB"
+          } else {
+              Write-Host "Build failed - executable not found!"
+              exit 1
+          }
 
       - name: Upload Windows executable
         uses: actions/upload-artifact@v4
         with:
-          name: TransformerOptimizer-Windows
+          name: TransformerOptimizer-Windows-${{ github.event.inputs.pytorch_variant }}-${{ steps.build_info.outputs.build_date }}-${{ steps.build_info.outputs.short_sha }}
           path: dist/TransformerOptimizer.exe
+          retention-days: 30
+          compression-level: 9
+
+      - name: Create release notes
+        run: |
+          $pytorch_variant = "${{ github.event.inputs.pytorch_variant }}"
+          $gpu_note = if ($pytorch_variant -eq "cpu") {
+              "CPU only (no NVIDIA GPU required)"
+          } else {
+              "CUDA $($pytorch_variant.Replace('cuda-', '')) - Requires NVIDIA GPU with compatible drivers"
+          }
+
+          @"
+          # Transformer Design Optimizer - Windows Build
+
+          **Build Date:** ${{ steps.build_info.outputs.build_date }}
+          **Commit:** ${{ steps.build_info.outputs.short_sha }}
+          **Expiration:** ${{ github.event.inputs.expiration_days }} days from build date
+          **Build Type:** ${{ github.event.inputs.build_type }}
+          **PyTorch:** $pytorch_variant
+
+          ## Features Included
+          - Core transformer optimization engine
+          - DearPyGui interface
+          - PyTorch acceleration: $gpu_note
+          - Batch optimization with pandas
+          - Export formats: Excel, PDF, DXF (CAD)
+          - ML inference support
+
+          ## System Requirements
+          - Windows 10/11 (64-bit)
+          - No Python installation required
+          $(if ($pytorch_variant -ne "cpu") { "- NVIDIA GPU with CUDA $($pytorch_variant.Replace('cuda-', '')) compatible drivers" })
+          "@ | Out-File -FilePath "dist/BUILD_INFO.txt" -Encoding utf8
+
+      - name: Upload build info
+        uses: actions/upload-artifact@v4
+        with:
+          name: BuildInfo-${{ steps.build_info.outputs.build_date }}
+          path: dist/BUILD_INFO.txt
           retention-days: 30
