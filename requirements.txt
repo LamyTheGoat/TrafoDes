@@ -6,6 +6,7 @@ dearpygui>=1.11
 numpy>=1.24
 scipy>=1.10
 numba>=0.57
+pandas>=2.0.3
 
 # GPU acceleration
 torch>=2.0
