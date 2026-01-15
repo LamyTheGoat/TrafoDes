@@ -10,6 +10,14 @@ from PyInstaller.utils.hooks import collect_all, collect_data_files, collect_sub
 
 block_cipher = None
 
+# Collect PyTorch with CUDA support (includes all DLLs and binaries)
+try:
+    torch_datas, torch_binaries, torch_hiddenimports = collect_all('torch')
+    print(f"Collected {len(torch_binaries)} PyTorch binaries (including CUDA if available)")
+except Exception as e:
+    print(f"Warning: Could not collect PyTorch: {e}")
+    torch_datas, torch_binaries, torch_hiddenimports = [], [], []
+
 # Determine platform
 is_windows = platform.system() == 'Windows'
 is_macos = platform.system() == 'Darwin'
@@ -36,6 +44,7 @@ datas = [
 datas += pandas_datas
 datas += openpyxl_datas
 datas += reportlab_datas
+datas += torch_datas
 
 # Hidden imports that PyInstaller might miss
 hidden_imports = [
@@ -53,7 +62,14 @@ hidden_imports = [
     'scipy.optimize',
     'scipy.special',
     'torch',
+    'torch.cuda',
+    'torch.cuda.amp',
+    'torch.backends',
+    'torch.backends.cuda',
+    'torch.backends.cudnn',
     'torch.mps',
+    'torch._C',
+    'torch._C._cuda',
     # Sound
     'playsound3',
     # Performance
@@ -85,9 +101,10 @@ except ImportError:
 hidden_imports += pandas_hiddenimports
 hidden_imports += openpyxl_hiddenimports
 hidden_imports += reportlab_hiddenimports
+hidden_imports += torch_hiddenimports
 
-# Combine binaries
-all_binaries = pandas_binaries + openpyxl_binaries + reportlab_binaries
+# Combine binaries (torch_binaries includes CUDA DLLs when built with CUDA)
+all_binaries = torch_binaries + pandas_binaries + openpyxl_binaries + reportlab_binaries
 
 a = Analysis(
     ['launcher.py'],
