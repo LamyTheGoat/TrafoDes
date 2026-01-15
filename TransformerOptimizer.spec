@@ -6,6 +6,7 @@ Builds time-limited executable for macOS and Windows
 
 import sys
 import platform
+from PyInstaller.utils.hooks import collect_all, collect_data_files, collect_submodules
 
 block_cipher = None
 
@@ -13,10 +14,28 @@ block_cipher = None
 is_windows = platform.system() == 'Windows'
 is_macos = platform.system() == 'Darwin'
 
+# Collect pandas and its dependencies
+pandas_datas, pandas_binaries, pandas_hiddenimports = collect_all('pandas')
+
+# Collect openpyxl (Excel export)
+try:
+    openpyxl_datas, openpyxl_binaries, openpyxl_hiddenimports = collect_all('openpyxl')
+except Exception:
+    openpyxl_datas, openpyxl_binaries, openpyxl_hiddenimports = [], [], []
+
+# Collect reportlab (PDF export)
+try:
+    reportlab_datas, reportlab_binaries, reportlab_hiddenimports = collect_all('reportlab')
+except Exception:
+    reportlab_datas, reportlab_binaries, reportlab_hiddenimports = [], [], []
+
 # Data files to include
 datas = [
     ('quack.wav', '.'),  # Include quack.wav in the bundle root
 ]
+datas += pandas_datas
+datas += openpyxl_datas
+datas += reportlab_datas
 
 # Hidden imports that PyInstaller might miss
 hidden_imports = [
@@ -62,10 +81,18 @@ try:
 except ImportError:
     pass
 
+# Combine hidden imports
+hidden_imports += pandas_hiddenimports
+hidden_imports += openpyxl_hiddenimports
+hidden_imports += reportlab_hiddenimports
+
+# Combine binaries
+all_binaries = pandas_binaries + openpyxl_binaries + reportlab_binaries
+
 a = Analysis(
     ['launcher.py'],
     pathex=[],
-    binaries=[],
+    binaries=all_binaries,
     datas=datas,
     hiddenimports=hidden_imports,
     hookspath=[],
@@ -144,7 +171,7 @@ else:
         debug=False,
         bootloader_ignore_signals=False,
         strip=False,
-        upx=True,
+        upx=False,  # Disabled - UPX can cause issues with some libraries
         upx_exclude=[],
         runtime_tmpdir=None,
         console=False,  # No console window
