@@ -15,7 +15,7 @@ import shutil
 # EXPIRATION CONFIGURATION
 # Set the expiration date (YYYY, MM, DD)
 # ============================================
-EXPIRATION_DATE = datetime.date(2026, 1, 14)  # 1 week from Jan 7, 2026
+EXPIRATION_DATE = datetime.date(2026, 1, 22)  # 1 week from Jan 15, 2026
 
 def get_executable_path():
     """Get the path to the current executable."""
@@ -132,6 +132,13 @@ def main():
     script_dir = os.path.dirname(os.path.abspath(__file__))
     if script_dir not in sys.path:
         sys.path.insert(0, script_dir)
+
+    # For PyInstaller bundles, also add the _MEIPASS directory
+    # This is where data files (including .py modules) are extracted
+    if getattr(sys, 'frozen', False):
+        meipass = getattr(sys, '_MEIPASS', None)
+        if meipass and meipass not in sys.path:
+            sys.path.insert(0, meipass)
 
     # Import and run the main application
     try:

@@ -16,30 +16,42 @@ is_macos = platform.system() == 'Darwin'
 # Data files to include
 datas = [
     ('quack.wav', '.'),  # Include quack.wav in the bundle root
-    ('batch_optimizer.py', '.'),  # Batch optimization module
-    ('export_utils.py', '.'),  # Export utilities module
 ]
 
 # Hidden imports that PyInstaller might miss
 hidden_imports = [
+    # Application modules (imported in try/except blocks, not traced automatically)
+    'mainRect',
+    'tank_oil',
+    'batch_optimizer',
+    'export_utils',
+    # GUI
     'dearpygui',
     'dearpygui.dearpygui',
+    # Scientific computing
     'numpy',
     'scipy',
     'scipy.optimize',
     'scipy.special',
     'torch',
     'torch.mps',
+    # Sound
     'playsound3',
+    # Performance
     'numba',
     'numba.core',
     'concurrent.futures',
     'multiprocessing',
-    'batch_optimizer',
-    'export_utils',
+    # Data export
     'pandas',
     'openpyxl',
     'reportlab',
+    'reportlab.lib',
+    'reportlab.lib.colors',
+    'reportlab.lib.pagesizes',
+    'reportlab.platypus',
+    'reportlab.lib.styles',
+    'reportlab.lib.units',
 ]
 
 # Try to add MLX for Apple Silicon
