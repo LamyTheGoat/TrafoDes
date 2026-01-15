@@ -47,21 +47,28 @@ except Exception:
 if not CUDA_AVAILABLE:
     print("Warning: CUDA not available.")
 
-# Optional PyTorch MPS imports for Apple Silicon GPU acceleration
+# Optional PyTorch imports for GPU acceleration (MPS for Apple, CUDA for NVIDIA)
 try:
     import torch
     MPS_AVAILABLE = torch.backends.mps.is_available() and torch.backends.mps.is_built()
+    TORCH_CUDA_AVAILABLE = torch.cuda.is_available()
     if MPS_AVAILABLE:
         print(f"Apple MPS GPU detected (PyTorch {torch.__version__})")
+    if TORCH_CUDA_AVAILABLE:
+        print(f"PyTorch CUDA detected: {torch.cuda.get_device_name(0)} (PyTorch {torch.__version__})")
 except ImportError:
     MPS_AVAILABLE = False
+    TORCH_CUDA_AVAILABLE = False
     torch = None
 except Exception:
     MPS_AVAILABLE = False
+    TORCH_CUDA_AVAILABLE = False
     torch = None
 
 if not MPS_AVAILABLE:
     print("Warning: PyTorch MPS not available.")
+if not TORCH_CUDA_AVAILABLE:
+    print("Warning: PyTorch CUDA not available.")
 
 # Optional MLX imports for Apple Silicon GPU acceleration
 try:
@@ -81,7 +88,9 @@ if not MLX_AVAILABLE:
 # Summary of GPU options
 GPU_OPTIONS = []
 if CUDA_AVAILABLE:
-    GPU_OPTIONS.append("cuda")
+    GPU_OPTIONS.append("numba_cuda")
+if TORCH_CUDA_AVAILABLE:
+    GPU_OPTIONS.append("torch_cuda")
 if MPS_AVAILABLE:
     GPU_OPTIONS.append("mps")
 if MLX_AVAILABLE:
@@ -3884,8 +3893,8 @@ def StartCUDAHybrid(tolerance=25, obround=True, put_cooling_ducts=True, print_re
             except:
                 pass
 
-    if not CUDA_AVAILABLE:
-        print("CUDA not available, falling back to CPU")
+    if not TORCH_CUDA_AVAILABLE:
+        print("PyTorch CUDA not available, falling back to CPU")
         return StartSmartOptimized(tolerance, obround, put_cooling_ducts, use_de=True, print_result=print_result)
 
     # Search depth presets (same as MPS)

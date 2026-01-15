@@ -1906,7 +1906,7 @@ class TransformerOptimizerApp:
         method_str = dpg.get_value("opt_method")
         if "Auto-Select" in method_str:
             # Auto-detect best available method
-            if mainRect.CUDA_AVAILABLE:
+            if mainRect.TORCH_CUDA_AVAILABLE:
                 method = 'cuda_hybrid'
                 print("Auto-selected: CUDA Hybrid (NVIDIA GPU detected)")
             elif mainRect.MPS_AVAILABLE:
