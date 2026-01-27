@@ -89,20 +89,20 @@ class ConsoleCapture:
             try:
                 self._original_stdout.write(text)
                 self._original_stdout.flush()
-            except:
+            except Exception:
                 pass
         # Queue for thread-safe UI update
         if self.output_queue is not None:
             try:
                 self.output_queue.put_nowait(text)
-            except:
+            except Exception:
                 pass  # Queue full, skip this text
 
     def flush(self):
         if self._original_stdout:
             try:
                 self._original_stdout.flush()
-            except:
+            except Exception:
                 pass
 
     def get_output(self):
@@ -645,7 +645,7 @@ class TransformerOptimizerApp:
                                default_value=1.90, min_value=0.5, max_value=15.0,
                                width=120, format="%.2f")
             dpg.add_input_float(label="Fill Level (%)", tag="oil_fill_level",
-                               default_value=100.0, min_value=70, max_value=95,
+                               default_value=90.0, min_value=70, max_value=100,
                                width=120, format="%.0f")
         dpg.bind_item_theme("tank_header", self.section_theme)
 
@@ -1003,10 +1003,11 @@ class TransformerOptimizerApp:
 
         csv_content = dpg.get_value("batch_csv_input")
         try:
-            self.batch_specs = parse_specs_from_csv(csv_content)
+            parsed_specs = parse_specs_from_csv(csv_content)
 
-            # Clear and repopulate table
+            # Clear table first, then set specs
             self._clear_batch_specs()
+            self.batch_specs = parsed_specs
             for spec in self.batch_specs:
                 with dpg.table_row(parent="batch_specs_table"):
                     dpg.add_text(spec.name)
@@ -1031,7 +1032,7 @@ class TransformerOptimizerApp:
             power_str = dpg.get_value("batch_sweep_powers")
             power_values = [float(p.strip()) for p in power_str.split(',')]
 
-            self.batch_specs = generate_parametric_sweep(
+            generated_specs = generate_parametric_sweep(
                 power_values=power_values,
                 hv_voltage=float(dpg.get_value("batch_sweep_hv")),
                 lv_voltage=float(dpg.get_value("batch_sweep_lv")),
@@ -1040,8 +1041,9 @@ class TransformerOptimizerApp:
                 ucc_target=6.0
             )
 
-            # Clear and repopulate table
+            # Clear table first, then set specs
             self._clear_batch_specs()
+            self.batch_specs = generated_specs
             for spec in self.batch_specs:
                 with dpg.table_row(parent="batch_specs_table"):
                     dpg.add_text(spec.name)
@@ -1101,7 +1103,7 @@ class TransformerOptimizerApp:
             try:
                 dpg.set_value("batch_progress", completed / total)
                 dpg.set_value("batch_status", f"Completed: {name} ({completed}/{total})")
-            except:
+            except Exception:
                 pass
 
         def run_batch():
@@ -1256,6 +1258,11 @@ class TransformerOptimizerApp:
                 dpg.add_input_float(label="LL Scale (W/kVA)", tag="inv_ll_scale",
                                    default_value=10.0, min_value=3.0, max_value=20.0,
                                    width=150, format="%.1f")
+                dpg.add_input_float(label="Loss Tolerance (%)", tag="inv_loss_tolerance",
+                                   default_value=100.0, min_value=0.0, max_value=500.0,
+                                   width=150, format="%.0f")
+                with dpg.tooltip(dpg.last_item()):
+                    dpg.add_text("How much can losses exceed the limits?\n100% = losses can be 2x the limit\n0% = strict (must meet limits)")
 
                 dpg.add_spacer(height=12)
 
@@ -1397,6 +1404,7 @@ class TransformerOptimizerApp:
         lv_voltage = dpg.get_value("inv_lv_voltage")
         nll_scale = dpg.get_value("inv_nll_scale")
         ll_scale = dpg.get_value("inv_ll_scale")
+        loss_tolerance = dpg.get_value("inv_loss_tolerance") / 100.0  # Convert % to fraction
 
         # Get selected materials
         lv_mat_name = dpg.get_value("inv_lv_material")
@@ -1411,7 +1419,7 @@ class TransformerOptimizerApp:
             try:
                 dpg.set_value("inv_progress", step / total)
                 dpg.set_value("inv_status", f"Testing {power:.0f} kVA ({step}/{total})")
-            except:
+            except Exception:
                 pass
 
         def run_inverse():
@@ -1427,8 +1435,9 @@ class TransformerOptimizerApp:
                     ucc_target=6.0,
                     price_tolerance=price_tolerance,
                     power_step=power_step,
-                    method='de',
+                    method='multi_de',  # Use multi-seed DE for more robust results
                     depth='fast',
+                    loss_tolerance=loss_tolerance,
                     progress_callback=progress_callback,
                     lv_material=lv_material,
                     hv_material=hv_material,
@@ -2096,7 +2105,7 @@ class TransformerOptimizerApp:
                     dpg.set_value("progress_text", "Optimization complete!")
                     try:
                         play_sound(resource_path("quack.wav"))
-                    except:
+                    except Exception:
                         pass
                 else:
                     dpg.set_value("status_text", "No valid design found")
@@ -2120,7 +2129,7 @@ class TransformerOptimizerApp:
                 import traceback
                 try:
                     self.console_queue.put_nowait(f"\nError: {str(e)}\n{traceback.format_exc()}")
-                except:
+                except Exception:
                     pass
             finally:
                 # Stop console capture
@@ -2147,7 +2156,7 @@ class TransformerOptimizerApp:
         dpg.configure_item("run_btn", enabled=True)
         dpg.configure_item("stop_btn", enabled=False)
 
-    def _display_results(self, result, tank_oil=None):
+    def _display_results(self, result, tank_oil_data=None):
         """Display optimization results in the UI."""
         # Design parameters
         dpg.set_value("result_core_dia", f"{result['core_diameter']:.1f}")
@@ -2191,49 +2200,49 @@ class TransformerOptimizerApp:
 
         # Tank & Oil Results
         tank_oil_price = 0.0
-        if tank_oil:
+        if tank_oil_data:
             dpg.show_item("tank_results_header")
 
             # Tank dimensions
-            dpg.set_value("result_tank_width", f"{tank_oil['tank_width']:.0f}")
-            dpg.set_value("result_tank_depth", f"{tank_oil['tank_depth']:.0f}")
-            dpg.set_value("result_tank_height", f"{tank_oil['tank_height']:.0f}")
+            dpg.set_value("result_tank_width", f"{tank_oil_data['tank_width']:.0f}")
+            dpg.set_value("result_tank_depth", f"{tank_oil_data['tank_depth']:.0f}")
+            dpg.set_value("result_tank_height", f"{tank_oil_data['tank_height']:.0f}")
 
             # Finwall info with fin counts per surface
-            if tank_oil['finwall_enabled']:
-                details = tank_oil.get('finwall_details', {})
+            if tank_oil_data['finwall_enabled']:
+                details = tank_oil_data.get('finwall_details', {})
                 surface_info = []
-                for surface in tank_oil['finwall_surfaces']:
+                for surface in tank_oil_data['finwall_surfaces']:
                     if surface in details:
                         n_fins = details[surface]['n_fins']
                         surface_info.append(f"{surface.capitalize()}: {n_fins} fins")
 
-                if tank_oil['finwall_auto_optimized']:
-                    finwall_text = f"Finwall: {tank_oil['fin_depth']:.0f}mm depth (auto for {tank_oil['target_temp_rise']:.0f}K)\n"
+                if tank_oil_data['finwall_auto_optimized']:
+                    finwall_text = f"Finwall: {tank_oil_data['fin_depth']:.0f}mm depth (auto for {tank_oil_data['target_temp_rise']:.0f}K)\n"
                 else:
-                    finwall_text = f"Finwall: {tank_oil['fin_depth']:.0f}mm depth\n"
+                    finwall_text = f"Finwall: {tank_oil_data['fin_depth']:.0f}mm depth\n"
                 finwall_text += ", ".join(surface_info)
             else:
                 finwall_text = "Finwall: Disabled"
             dpg.set_value("finwall_info", finwall_text)
 
             # Tank shell weight and cost
-            dpg.set_value("weight_tank_shell", f"{tank_oil['tank_shell_weight']:.1f}")
-            tank_shell_cost = tank_oil['tank_shell_weight'] * dpg.get_value("steel_price")
+            dpg.set_value("weight_tank_shell", f"{tank_oil_data['tank_shell_weight']:.1f}")
+            tank_shell_cost = tank_oil_data['tank_shell_weight'] * dpg.get_value("steel_price")
             dpg.set_value("cost_tank_shell", f"${tank_shell_cost:.2f}")
 
             # Finwall weight and cost
-            dpg.set_value("weight_finwall", f"{tank_oil['finwall_weight']:.1f}")
-            finwall_cost = tank_oil['finwall_weight'] * dpg.get_value("steel_price")
+            dpg.set_value("weight_finwall", f"{tank_oil_data['finwall_weight']:.1f}")
+            finwall_cost = tank_oil_data['finwall_weight'] * dpg.get_value("steel_price")
             dpg.set_value("cost_finwall", f"${finwall_cost:.2f}")
 
             # Oil weight and cost
-            dpg.set_value("weight_oil", f"{tank_oil['oil_weight']:.1f}")
-            dpg.set_value("cost_oil", f"${tank_oil['oil_price']:.2f}")
+            dpg.set_value("weight_oil", f"{tank_oil_data['oil_weight']:.1f}")
+            dpg.set_value("cost_oil", f"${tank_oil_data['oil_price']:.2f}")
 
             # Tank + Oil subtotal
-            tank_oil_weight = tank_oil['total_tank_weight'] + tank_oil['oil_weight']
-            tank_oil_price = tank_oil['tank_price'] + tank_oil['oil_price']
+            tank_oil_weight = tank_oil_data['total_tank_weight'] + tank_oil_data['oil_weight']
+            tank_oil_price = tank_oil_data['tank_price'] + tank_oil_data['oil_price']
             dpg.set_value("weight_tank_oil_subtotal", f"{tank_oil_weight:.1f}")
             dpg.set_value("cost_tank_oil_subtotal", f"${tank_oil_price:.2f}")
         else:
@@ -2249,22 +2258,11 @@ class TransformerOptimizerApp:
         dpg.set_value("time_text", f"Optimization completed in {result['time']:.2f} seconds")
 
     def run(self):
-        """Run the application main loop."""
+        """Run the application main loop.
+
+        Duck animation and console queue processing are handled by _on_frame callback.
+        """
         while dpg.is_dearpygui_running():
-            # Process console queue directly in main loop for reliable updates
-            self._process_console_queue()
-
-            # Animate duck when optimizing
-            if self.is_optimizing:
-                current_time = time.time()
-                if current_time - self._last_duck_update > 0.05:
-                    self.duck_angle += 0.15
-                    self._draw_duck(30, 22, self.duck_angle)
-                    self._last_duck_update = current_time
-            elif self.duck_angle != 0:
-                self.duck_angle = 0
-                self._draw_duck(30, 22, 0)
-
             dpg.render_dearpygui_frame()
 
         dpg.destroy_context()

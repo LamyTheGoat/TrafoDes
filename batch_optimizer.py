@@ -615,6 +615,7 @@ def _binary_search_margin(
     hv_material: Optional[MaterialPreset] = None,
     core_material: Optional[Dict] = None,
     loss_tolerance: float = 0.85,
+    rejection_stats: Optional[Dict] = None,
 ) -> Optional[Dict]:
     """
     Binary search to find the tightest loss limits that fit within budget.
@@ -622,6 +623,7 @@ def _binary_search_margin(
 
     Args:
         loss_tolerance: How much losses can exceed limits (0.85 = 85% over allowed)
+        rejection_stats: Optional dict to track rejection reasons for UI feedback
     """
     # Search range for multiplier: 0.3 (tight) to 8.0 (very loose)
     # Very wide range needed for cheap/small transformers where losses scale differently
@@ -639,10 +641,16 @@ def _binary_search_margin(
     )
 
     if result is None:
+        if rejection_stats is not None:
+            rejection_stats['no_solution'] += 1
         return None  # Can't even find a solution with very loose limits
 
     price = result.get('total_price', float('inf'))
     if price > max_price:
+        if rejection_stats is not None:
+            rejection_stats['price_too_high'] += 1
+            if price < rejection_stats['lowest_price_found']:
+                rejection_stats['lowest_price_found'] = price
         return None  # Even loosest limits don't fit budget
 
     # We have at least one solution that fits budget, but check if it meets loss limits
@@ -654,7 +662,7 @@ def _binary_search_margin(
     total_margin = 0.5 * nll_margin + 0.5 * ll_margin
 
     # Accept if margins are within tolerance (negative margin = over limit)
-    # loss_tolerance=0.10 means allow up to 10% over limit (margin >= -0.10)
+    # loss_tolerance=0.85 means allow up to 85% over limit (margin >= -0.85)
     if nll_margin >= -loss_tolerance and ll_margin >= -loss_tolerance:
         best_result = {
             'power': power,
@@ -669,8 +677,19 @@ def _binary_search_margin(
             'multiplier': mult_high,
         }
         best_margin = total_margin
+        print(f"[INVERSE] {power:.0f} kVA @ ${price:.0f} ACCEPTED - NLL margin: {nll_margin*100:.0f}%, LL margin: {ll_margin*100:.0f}%")
     else:
         # Solution exceeds tolerance - not valid
+        print(f"[INVERSE] {power:.0f} kVA @ ${price:.0f} REJECTED - losses too high!")
+        print(f"         NLL: {nll:.0f}W vs limit {guaranteed_nll:.0f}W (margin: {nll_margin*100:.0f}%, need >= {-loss_tolerance*100:.0f}%)")
+        print(f"         LL: {ll:.0f}W vs limit {guaranteed_ll:.0f}W (margin: {ll_margin*100:.0f}%, need >= {-loss_tolerance*100:.0f}%)")
+        if rejection_stats is not None:
+            rejection_stats['losses_too_high'] += 1
+            # Track best rejected design for feedback
+            if power > rejection_stats['best_rejected_power']:
+                rejection_stats['best_rejected_power'] = power
+                rejection_stats['best_rejected_nll_margin'] = nll_margin
+                rejection_stats['best_rejected_ll_margin'] = ll_margin
         best_result = None
         best_margin = float('inf')
 
@@ -782,6 +801,17 @@ def run_inverse_optimization(
     max_price = target_price * (1 + price_tolerance)
     candidates_evaluated = 0
 
+    # Track rejection statistics for user feedback
+    rejection_stats = {
+        'price_too_high': 0,
+        'losses_too_high': 0,
+        'no_solution': 0,
+        'lowest_price_found': float('inf'),
+        'best_rejected_power': 0,
+        'best_rejected_nll_margin': 0,
+        'best_rejected_ll_margin': 0,
+    }
+
     # Full scan approach: Cost is NOT monotonic with power at high voltages
     # (small transformers can be more expensive than larger ones due to insulation costs)
     # So we scan ALL power levels and keep track of the HIGHEST power that fits budget
@@ -817,6 +847,7 @@ def run_inverse_optimization(
             hv_material=hv_material,
             core_material=core_material,
             loss_tolerance=loss_tolerance,
+            rejection_stats=rejection_stats,
         )
         candidates_evaluated += 4
 
@@ -826,12 +857,27 @@ def run_inverse_optimization(
             best_power_result = result
 
     if best_power_result is None:
-        # Couldn't find any power level that fits budget
+        # Build detailed failure message based on rejection stats
+        failure_reasons = []
+        if rejection_stats['price_too_high'] > 0:
+            failure_reasons.append(f"Price too high ({rejection_stats['price_too_high']}x) - lowest found: ${rejection_stats['lowest_price_found']:.0f}")
+        if rejection_stats['losses_too_high'] > 0:
+            failure_reasons.append(f"Losses exceeded tolerance ({rejection_stats['losses_too_high']}x)")
+            if rejection_stats['best_rejected_power'] > 0:
+                failure_reasons.append(f"Best rejected: {rejection_stats['best_rejected_power']:.0f} kVA (NLL: {rejection_stats['best_rejected_nll_margin']*100:.0f}%, LL: {rejection_stats['best_rejected_ll_margin']*100:.0f}%)")
+        if rejection_stats['no_solution'] > 0:
+            failure_reasons.append(f"No valid design found ({rejection_stats['no_solution']}x)")
+
+        if not failure_reasons:
+            failure_reasons.append("Unknown reason")
+
+        message = f"No design found for ${target_price:.0f} budget. " + " | ".join(failure_reasons)
+
         return InverseResult(
             power=0, price=0, design={}, nll=0, ll=0,
             nll_margin=0, ll_margin=0, total_margin=0, ucc=0,
             success=False,
-            message=f"No valid design found in range {power_min:.0f}-{power_max:.0f} kVA for budget ${target_price:.0f}",
+            message=message,
             candidates_evaluated=candidates_evaluated
         )
 
